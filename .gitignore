@@ -43,3 +43,11 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Environment and Configuration
+.env
+.env.local
+.env.*.local
+lib/config/supabase_config.dart.local
+**/google-services.json
+**/GoogleService-Info.plist
