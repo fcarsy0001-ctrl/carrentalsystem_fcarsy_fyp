@@ -1,0 +1,149 @@
+// Supabase Configuration Template
+// 
+// Instructions:
+// 1. Copy this file to 'supabase_config.dart' (remove .example)
+// 2. Replace the placeholder values with your actual credentials
+// 3. Do NOT commit supabase_config.dart to version control
+
+class SupabaseConfig {
+  // ===========================================
+  // REQUIRED: Supabase Credentials
+  // ===========================================
+  
+  // Get these from: Supabase Dashboard > Settings > API
+  // Example: 'https://abcdefghijklmnop.supabase.co'
+  static const String supabaseUrl = 'YOUR_SUPABASE_URL';
+  
+  // Get this from: Supabase Dashboard > Settings > API > anon public
+  // Example: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
+  static const String supabaseAnonKey = 'YOUR_SUPABASE_ANON_KEY';
+  
+  // ===========================================
+  // OPTIONAL: Google Sign-In (OAuth)
+  // ===========================================
+  
+  // Get this from: Google Cloud Console > Credentials
+  // Create OAuth 2.0 Client ID (Web application)
+  // Example: '123456789-abcdefgh.apps.googleusercontent.com'
+  // Leave as 'YOUR_GOOGLE_WEB_CLIENT_ID' if not using Google Sign-In
+  static const String googleWebClientId = 'YOUR_GOOGLE_WEB_CLIENT_ID';
+  
+  // ===========================================
+  // OPTIONAL: Deep Link for Password Reset
+  // ===========================================
+  
+  // Custom URL scheme for your app
+  // Format: 'yourapp://reset-password/'
+  // Default: 'io.supabase.carrentalsystem://reset-password/'
+  // Update if you have a custom domain or scheme
+  static const String resetPasswordRedirectUrl = 'io.supabase.carrentalsystem://reset-password/';
+}
+
+// ===========================================
+// HOW TO GET CREDENTIALS
+// ===========================================
+
+/*
+
+1. SUPABASE URL & ANON KEY:
+   
+   Step 1: Go to https://app.supabase.com
+   Step 2: Select your project (or create a new one)
+   Step 3: Go to Settings (⚙️) > API
+   Step 4: Copy:
+           - Project URL → supabaseUrl
+           - anon public key → supabaseAnonKey
+
+2. GOOGLE WEB CLIENT ID (Optional):
+   
+   Step 1: Go to https://console.cloud.google.com
+   Step 2: Create a new project or select existing
+   Step 3: Go to APIs & Services > Credentials
+   Step 4: Click "Create Credentials" > "OAuth 2.0 Client ID"
+   Step 5: Select "Web application"
+   Step 6: Add authorized redirect URIs:
+           - https://your-project.supabase.co/auth/v1/callback
+   Step 7: Copy the Client ID
+   
+   Step 8: Add to Supabase:
+           - Go to Supabase Dashboard > Authentication > Providers
+           - Enable Google
+           - Paste Client ID and Client Secret
+
+3. DEEP LINK CONFIGURATION:
+   
+   If you want password reset to redirect to your app:
+   
+   Android (android/app/src/main/AndroidManifest.xml):
+   <intent-filter>
+       <action android:name="android.intent.action.VIEW" />
+       <category android:name="android.intent.category.DEFAULT" />
+       <category android:name="android.intent.category.BROWSABLE" />
+       <data
+           android:scheme="io.supabase.carrentalsystem"
+           android:host="reset-password" />
+   </intent-filter>
+   
+   iOS (ios/Runner/Info.plist):
+   <key>CFBundleURLTypes</key>
+   <array>
+       <dict>
+           <key>CFBundleTypeRole</key>
+           <string>Editor</string>
+           <key>CFBundleURLSchemes</key>
+           <array>
+               <string>io.supabase.carrentalsystem</string>
+           </array>
+       </dict>
+   </array>
+
+*/
+
+// ===========================================
+// SECURITY NOTES
+// ===========================================
+
+/*
+
+⚠️ IMPORTANT SECURITY REMINDERS:
+
+1. Never commit this file with real credentials to version control
+2. Add 'supabase_config.dart' to your .gitignore
+3. Use environment variables for production
+4. Rotate keys if accidentally exposed
+5. Use Supabase service_role key only on backend
+6. Never expose service_role key in mobile/web apps
+7. Keep dependencies updated
+8. Monitor Supabase dashboard for unusual activity
+
+*/
+
+// ===========================================
+// ENVIRONMENT-SPECIFIC CONFIGS (Advanced)
+// ===========================================
+
+/*
+
+For different environments (dev, staging, prod), you can use:
+
+class SupabaseConfig {
+  static const bool isDevelopment = true; // Change based on environment
+  
+  static String get supabaseUrl {
+    if (isDevelopment) {
+      return 'https://dev-project.supabase.co';
+    } else {
+      return 'https://prod-project.supabase.co';
+    }
+  }
+  
+  static String get supabaseAnonKey {
+    if (isDevelopment) {
+      return 'dev-key-here';
+    } else {
+      return 'prod-key-here';
+    }
+  }
+}
+
+*/
