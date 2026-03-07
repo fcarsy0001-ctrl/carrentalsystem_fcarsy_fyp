@@ -1,0 +1,40 @@
+
+[functions.set_staff_password]
+enabled = true
+verify_jwt = true
+import_map = "./functions/set_staff_password/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/set_staff_password/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/set_staff_password/*.html" ]
+
+[functions.create_sadmin]
+enabled = true
+verify_jwt = true
+import_map = "./functions/create_sadmin/deno.json"
+entrypoint = "./functions/create_sadmin/index.ts"
+
+[functions.delete_sadmin]
+enabled = true
+verify_jwt = true
+import_map = "./functions/delete_sadmin/deno.json"
+entrypoint = "./functions/delete_sadmin/index.ts"
+
+[functions.create_app_user]
+enabled = true
+verify_jwt = true
+import_map = "./functions/create_app_user/deno.json"
+entrypoint = "./functions/create_app_user/index.ts"
+
+[functions.delete_app_user]
+enabled = true
+verify_jwt = false
+import_map = "./functions/delete_app_user/deno.json"
+entrypoint = "./functions/delete_app_user/index.ts"
+
+[functions.delete_leaser]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/delete_leaser/index.ts"

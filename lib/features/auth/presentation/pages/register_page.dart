@@ -1,0 +1,1 @@
+export '../../../../login/register.dart';
