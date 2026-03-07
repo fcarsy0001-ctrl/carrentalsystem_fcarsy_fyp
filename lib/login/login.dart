@@ -1,13 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:google_sign_in/google_sign_in.dart';
 import '../main.dart';
 import '../config/supabase_config.dart';
 import 'register.dart';
 import 'reset_password.dart';
+import '../leaser/leaser_register_page.dart';
 
 class LoginPage extends StatefulWidget {
-  const LoginPage({super.key});
+  const LoginPage({Key? key}) : super(key: key);
 
   @override
   State<LoginPage> createState() => _LoginPageState();
@@ -19,6 +19,40 @@ class _LoginPageState extends State<LoginPage> {
   final _passwordController = TextEditingController();
   bool _isLoading = false;
   bool _obscurePassword = true;
+
+  /// If the user exists in `public.app_user` and is Inactive, block login.
+  ///
+  /// Note: Supabase Auth itself will still authenticate the credentials.
+  /// We must enforce status at app layer (and also in main.dart gate).
+  Future<bool> _enforceActiveUserOrLogout() async {
+    final authUser = supabase.auth.currentUser;
+    if (authUser == null) return true;
+
+    try {
+      final row = await supabase
+          .from('app_user')
+          .select('user_status')
+          .eq('auth_uid', authUser.id)
+          .limit(1)
+          .maybeSingle();
+
+      // If no app_user row, this could be Admin/Staff account.
+      if (row == null) return true;
+
+      final status = (row['user_status'] ?? 'Active').toString().trim().toLowerCase();
+      if (status != 'active') {
+        try {
+          await supabase.auth.signOut();
+        } catch (_) {}
+        return false;
+      }
+    } catch (_) {
+      // If RLS blocks the read, don't block login here.
+      // main.dart gate will still protect routes if it can read.
+    }
+
+    return true;
+  }
 
   @override
   void dispose() {
@@ -39,6 +73,19 @@ class _LoginPageState extends State<LoginPage> {
       );
 
       if (response.session != null && mounted) {
+        // Block inactive app users.
+        final ok = await _enforceActiveUserOrLogout();
+        if (!ok) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Your account has been deactivated. Please contact admin.'),
+              backgroundColor: Colors.red,
+            ),
+          );
+          return;
+        }
+
         // Authentication successful
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -76,54 +123,29 @@ class _LoginPageState extends State<LoginPage> {
     setState(() => _isLoading = true);
 
     try {
-      final GoogleSignIn googleSignIn = GoogleSignIn(
-        serverClientId: SupabaseConfig.googleWebClientId,
+      // ✅ Supabase OAuth (no google_sign_in plugin)
+      await supabase.auth.signInWithOAuth(
+        OAuthProvider.google,
+        redirectTo: SupabaseConfig.googleRedirectUrl,
+        queryParams: const {
+          'prompt': 'select_account',
+        },
       );
-
-      final googleUser = await googleSignIn.signIn();
-      if (googleUser == null) {
-        setState(() => _isLoading = false);
-        return;
-      }
-
-      final googleAuth = await googleUser.authentication;
-      final accessToken = googleAuth.accessToken;
-      final idToken = googleAuth.idToken;
-
-      if (accessToken == null) {
-        throw 'No Access Token found.';
-      }
-      if (idToken == null) {
-        throw 'No ID Token found.';
-      }
-
-      final response = await supabase.auth.signInWithIdToken(
-        provider: OAuthProvider.google,
-        idToken: idToken,
-        accessToken: accessToken,
-      );
-
-      if (response.session != null && mounted) {
+      // After browser returns to the app, main.dart will handle the deep link
+    } on AuthException catch (e) {
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Google sign-in successful!'),
-            backgroundColor: Colors.green,
-          ),
+          SnackBar(content: Text(e.message), backgroundColor: Colors.red),
         );
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Google sign-in failed: $e'),
-            backgroundColor: Colors.red,
-          ),
+          SnackBar(content: Text('Google sign-in failed: $e'), backgroundColor: Colors.red),
         );
       }
     } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -324,6 +346,38 @@ class _LoginPageState extends State<LoginPage> {
                         },
                         child: Text(
                           'Sign Up',
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.primary,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  const SizedBox(height: 8),
+
+                  // Become Leaser
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        'Want to join us? ',
+                        style: TextStyle(color: Colors.grey[600]),
+                      ),
+                      TextButton(
+                        onPressed: _isLoading
+                            ? null
+                            : () {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (context) => LeaserRegisterPage(),
+                                  ),
+                                );
+                              },
+                        child: Text(
+                          'Become Leaser',
                           style: TextStyle(
                             color: Theme.of(context).colorScheme.primary,
                             fontWeight: FontWeight.bold,

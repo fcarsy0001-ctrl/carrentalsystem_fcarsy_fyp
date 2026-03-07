@@ -45,5 +45,18 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+
+	<!-- Deep links: carrentalsystem://login-callback, carrentalsystem://reset-password, carrentalsystem://verify -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>carrentalsystem</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>carrentalsystem</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>
