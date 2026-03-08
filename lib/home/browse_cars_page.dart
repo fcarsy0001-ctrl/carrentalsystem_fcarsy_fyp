@@ -118,7 +118,7 @@ class _BrowseCarsPageState extends State<BrowseCarsPage> {
         for (final raw in (b as List)) {
           final m = Map<String, dynamic>.from(raw as Map);
           final status = (m['booking_status'] ?? '').toString().trim().toLowerCase();
-          if (status.contains('cancel') || status.contains('deactiv') || status.contains('deactive')) continue;
+          if (status == 'cancelled' || status == 'canceled' || status == 'deactive' || status == 'deactivated') continue;
           bookedIds.add((m['vehicle_id'] ?? '').toString());
         }
         if (bookedIds.isNotEmpty) {

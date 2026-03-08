@@ -82,57 +82,57 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           child: ListView(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
             children: [
-              LayoutBuilder(
-                builder: (ctx, c) {
-                  final narrow = c.maxWidth < 420;
-                  final a = _KpiCard(
-                    title: 'Users',
-                    value: d.metrics.users.toString(),
-                    icon: Icons.people_alt_outlined,
-                    onTap: () => Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const UserManagementPage()),
+              Row(
+                children: [
+                  Expanded(
+                    child: _KpiCard(
+                      title: 'Users',
+                      value: d.metrics.users.toString(),
+                      icon: Icons.people_alt_outlined,
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const UserManagementPage()),
+                      ),
                     ),
-                  );
-                  final b = _KpiCard(
-                    title: 'Leasers',
-                    value: d.metrics.leasers.toString(),
-                    icon: Icons.handshake_outlined,
-                    onTap: () => Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const LeaserAdminModulePage()),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _KpiCard(
+                      title: 'Leasers',
+                      value: d.metrics.leasers.toString(),
+                      icon: Icons.handshake_outlined,
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const LeaserAdminModulePage()),
+                      ),
                     ),
-                  );
-                  if (narrow) {
-                    return Column(children: [a, const SizedBox(height: 12), b]);
-                  }
-                  return Row(children: [Expanded(child: a), const SizedBox(width: 12), Expanded(child: b)]);
-                },
+                  ),
+                ],
               ),
               const SizedBox(height: 12),
-              LayoutBuilder(
-                builder: (ctx, c) {
-                  final narrow = c.maxWidth < 420;
-                  final a = _KpiCard(
-                    title: 'Order Total',
-                    value: _money(d.metrics.orderTotal),
-                    icon: Icons.shopping_bag_outlined,
-                    onTap: () => Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const OrderManagementPage()),
+              Row(
+                children: [
+                  Expanded(
+                    child: _KpiCard(
+                      title: 'Order Total',
+                      value: _money(d.metrics.orderTotal),
+                      icon: Icons.shopping_bag_outlined,
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const OrderManagementPage()),
+                      ),
                     ),
-                  );
-                  final b = _KpiCard(
-                    title: 'Platform Revenue',
-                    subtitle: 'Commission ${(PlatformRates.commissionRate * 100).toStringAsFixed(0)}%',
-                    value: _money(d.metrics.platformRevenue),
-                    icon: Icons.payments_outlined,
-                    onTap: () => Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const ReportsAdminPage()),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _KpiCard(
+                      title: 'Platform Revenue',
+                      subtitle: 'Commission ${(PlatformRates.commissionRate * 100).toStringAsFixed(0)}%',
+                      value: _money(d.metrics.platformRevenue),
+                      icon: Icons.payments_outlined,
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const ReportsAdminPage()),
+                      ),
                     ),
-                  );
-                  if (narrow) {
-                    return Column(children: [a, const SizedBox(height: 12), b]);
-                  }
-                  return Row(children: [Expanded(child: a), const SizedBox(width: 12), Expanded(child: b)]);
-                },
+                  ),
+                ],
               ),
 
               const SizedBox(height: 18),

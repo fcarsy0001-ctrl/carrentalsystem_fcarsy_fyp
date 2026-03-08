@@ -78,25 +78,40 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
     return '$h:$m$ap';
   }
 
-  bool get _isActive {
+  String get _rawStatus => (_b['booking_status'] ?? '').toString();
+
+  String _normStatus(String status) {
+    final s = status.trim().toLowerCase();
+    if (s == 'cancel' || s == 'cancelled' || s == 'canceled') return 'cancelled';
+    if (s == 'deactive' || s == 'deactivated') return 'deactive';
+    if (s == 'active') return 'active';
+    if (s == 'inactive') return 'inactive';
+    return s;
+  }
+
+  bool get _isTimeActive {
     final end = _dt(_b['rental_end']);
     if (end == null) return false;
     return DateTime.now().isBefore(end);
   }
 
-  bool get _isDeactive {
-    final st = (_b['booking_status'] ?? '').toString().toLowerCase();
-    return st.contains('deactiv') || st.contains('deactive');
-  }
-
   String get _statusLabel {
-    if (_isDeactive) return 'Deactive';
-    return _isActive ? 'Active' : 'Inactive';
+    final s = _normStatus(_rawStatus);
+    if (s == 'cancelled') return 'Cancelled';
+    if (s == 'deactive') return 'Deactive by Admin';
+    // If booking_status explicitly says Active/Inactive, respect it
+    if (s == 'active') return 'Active';
+    if (s == 'inactive') return 'Inactive';
+    // Otherwise fall back to time-based
+    return _isTimeActive ? 'Active' : 'Inactive';
   }
 
   Color get _statusColor {
-    if (_isDeactive) return Colors.red;
-    return _isActive ? Colors.green : Colors.grey;
+    final s = _normStatus(_rawStatus);
+    if (s == 'cancelled' || s == 'deactive') return Colors.red;
+    if (s == 'inactive') return Colors.grey;
+    if (s == 'active') return Colors.green;
+    return _isTimeActive ? Colors.green : Colors.grey;
   }
 
   String _timeRangeText() {
@@ -340,8 +355,8 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
                 _SectionCard(
                   title: 'Time',
                   trailing: Text(
-                    _isDeactive ? 'Deactivated' : _hoursLeftText(),
-                    style: TextStyle(color: _statusColor, fontWeight: FontWeight.w800, fontSize: 12),
+                    _hoursLeftText(),
+                    style: TextStyle(color: Colors.green.shade800, fontWeight: FontWeight.w800, fontSize: 12),
                   ),
                   child: Text(
                     _timeRangeText(),

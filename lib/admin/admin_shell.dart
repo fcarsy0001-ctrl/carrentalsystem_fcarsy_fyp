@@ -4,13 +4,13 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../main.dart';
 import 'admin_dashboard_page.dart';
 import 'driver_license_review_page.dart';
-import 'leaser_review_page.dart';
 import 'leaser_admin_module_page.dart';
+import 'order_management_page.dart';
 import 'promotion_admin_page.dart';
+import 'reports_admin_page.dart';
 import 'staff_admin_page.dart';
 import 'user_management_page.dart';
 import 'vehicle_admin_page.dart';
-import 'order_management_page.dart';
 
 class AdminShell extends StatefulWidget {
   const AdminShell({super.key, required this.isSuperAdmin});
@@ -23,6 +23,8 @@ class AdminShell extends StatefulWidget {
 
 class _AdminShellState extends State<AdminShell> {
   SupabaseClient get _supa => Supabase.instance.client;
+
+  int _index = 0;
 
   Future<void> _logout() async {
     try {
@@ -37,51 +39,95 @@ class _AdminShellState extends State<AdminShell> {
 
   @override
   Widget build(BuildContext context) {
-    final tabs = <Tab>[
-      const Tab(icon: Icon(Icons.dashboard_outlined), text: 'Dashboard'),
-      const Tab(icon: Icon(Icons.badge_outlined), text: 'Licences'),
-      const Tab(icon: Icon(Icons.handshake_outlined), text: 'Leasers'),
-      const Tab(icon: Icon(Icons.directions_car_outlined), text: 'Vehicles'),
-      const Tab(icon: Icon(Icons.receipt_long_outlined), text: 'Orders'),
-      const Tab(icon: Icon(Icons.people_alt_outlined), text: 'Users'),
-      const Tab(icon: Icon(Icons.local_offer_outlined), text: 'Promotions'),
-      if (widget.isSuperAdmin)
-        const Tab(icon: Icon(Icons.supervisor_account_outlined), text: 'Staff'),
+    final items = <_NavItem>[
+      const _NavItem('Dashboard', Icons.dashboard_outlined, AdminDashboardPage()),
+      const _NavItem('Orders', Icons.receipt_long_outlined, OrderManagementPage()),
+      const _NavItem('Reports', Icons.bar_chart_outlined, ReportsAdminPage()),
+      const _NavItem('Licences', Icons.badge_outlined, DriverLicenseReviewPage()),
+      const _NavItem('Leasers', Icons.handshake_outlined, LeaserAdminModulePage()),
+      const _NavItem('Vehicles', Icons.directions_car_outlined, VehicleAdminPage(embedded: true)),
+      const _NavItem('Users', Icons.people_alt_outlined, UserManagementPage()),
+      const _NavItem('Promotions', Icons.local_offer_outlined, PromotionAdminPage()),
+      if (widget.isSuperAdmin) const _NavItem('Staff', Icons.supervisor_account_outlined, StaffAdminPage()),
     ];
 
-    final views = <Widget>[
-      const AdminDashboardPage(),
-      const DriverLicenseReviewPage(),
-      const LeaserAdminModulePage(),
-      const VehicleAdminPage(embedded: true),
-      const OrderManagementPage(),
-      const UserManagementPage(),
-      const PromotionAdminPage(),
-      if (widget.isSuperAdmin) const StaffAdminPage(),
-    ];
+    if (_index >= items.length) _index = 0;
 
-    return DefaultTabController(
-      length: tabs.length,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('Admin Home'),
-          centerTitle: true,
-          scrolledUnderElevation: 0,
-          actions: [
-            IconButton(
-              tooltip: 'Logout',
-              onPressed: _logout,
-              icon: const Icon(Icons.logout_rounded),
-            ),
-          ],
-          bottom: TabBar(
-            isScrollable: true,
-            tabAlignment: TabAlignment.start,
-            tabs: tabs,
+    final isWide = MediaQuery.sizeOf(context).width >= 900;
+
+    final body = items[_index].page;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(items[_index].label),
+        scrolledUnderElevation: 0,
+        actions: [
+          IconButton(
+            tooltip: 'Logout',
+            onPressed: _logout,
+            icon: const Icon(Icons.logout_rounded),
           ),
-        ),
-        body: TabBarView(children: views),
+        ],
       ),
+      drawer: isWide
+          ? null
+          : Drawer(
+              child: SafeArea(
+                child: ListView(
+                  padding: EdgeInsets.zero,
+                  children: [
+                    const SizedBox(height: 8),
+                    for (var i = 0; i < items.length; i++)
+                      ListTile(
+                        leading: Icon(items[i].icon),
+                        title: Text(items[i].label),
+                        selected: i == _index,
+                        onTap: () {
+                          setState(() => _index = i);
+                          Navigator.pop(context);
+                        },
+                      ),
+                    const Divider(),
+                    ListTile(
+                      leading: const Icon(Icons.logout_rounded),
+                      title: const Text('Logout'),
+                      onTap: () async {
+                        Navigator.pop(context);
+                        await _logout();
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            ),
+      body: isWide
+          ? Row(
+              children: [
+                NavigationRail(
+                  selectedIndex: _index,
+                  labelType: NavigationRailLabelType.all,
+                  onDestinationSelected: (i) => setState(() => _index = i),
+                  destinations: [
+                    for (final it in items)
+                      NavigationRailDestination(
+                        icon: Icon(it.icon),
+                        selectedIcon: Icon(it.icon),
+                        label: Text(it.label),
+                      ),
+                  ],
+                ),
+                const VerticalDivider(width: 1),
+                Expanded(child: body),
+              ],
+            )
+          : body,
     );
   }
+}
+
+class _NavItem {
+  const _NavItem(this.label, this.icon, this.page);
+  final String label;
+  final IconData icon;
+  final Widget page;
 }

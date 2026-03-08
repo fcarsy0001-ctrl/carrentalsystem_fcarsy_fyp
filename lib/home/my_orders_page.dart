@@ -23,7 +23,7 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
   String? _error;
   List<Map<String, dynamic>> _ongoing = const [];
   List<Map<String, dynamic>> _past = const [];
-  List<Map<String, dynamic>> _deactivated = const [];
+  List<Map<String, dynamic>> _blocked = const [];
 
   @override
   void initState() {
@@ -57,22 +57,10 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
     final end = _dt(r['rental_end']);
     if (end == null) return false;
     final st = (r['booking_status'] ?? '').toString().toLowerCase();
-    if (st.contains('deactiv') || st.contains('deactive')) {
-      return false;
-    }
-    if (st.contains('cancel') || st.contains('fail') || st.contains('reject')) {
+    if (st.contains('cancel') || st.contains('deactive') || st.contains('fail') || st.contains('reject')) {
       return false;
     }
     return DateTime.now().isBefore(end);
-  }
-
-  _OrderType _type(Map<String, dynamic> r) {
-    final st = (r['booking_status'] ?? '').toString().trim().toLowerCase();
-    if (st.contains('deactiv') || st.contains('deactive')) return _OrderType.deactive;
-    if (st.contains('cancel') || st.contains('fail') || st.contains('reject')) return _OrderType.inactive;
-    final end = _dt(r['rental_end']);
-    if (end != null && DateTime.now().isAfter(end)) return _OrderType.inactive;
-    return _OrderType.active;
   }
 
   String _hoursLeftText(Map<String, dynamic> r) {
@@ -93,6 +81,32 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
     final hours = (totalMins % (60 * 24)) ~/ 60;
     if (days > 0) return '$days day ${hours}h left';
     return '${math.max(0, hours)} hour left';
+  }
+
+  String _normStatus(String status) {
+    final s = status.trim().toLowerCase();
+    if (s == 'cancel' || s == 'cancelled' || s == 'canceled') return 'cancelled';
+    if (s == 'deactive' || s == 'deactivated') return 'deactive';
+    if (s == 'active') return 'active';
+    if (s == 'inactive') return 'inactive';
+    return s;
+  }
+
+  String _statusText(String status) {
+    final s = _normStatus(status);
+    if (s == 'cancelled') return 'Cancelled';
+    if (s == 'deactive') return 'Deactive by Admin';
+    if (s == 'active') return 'Active';
+    if (s == 'inactive') return 'Inactive';
+    return status.trim().isEmpty ? '-' : status;
+  }
+
+  Color _statusColor(String status) {
+    final s = _normStatus(status);
+    if (s == 'cancelled' || s == 'deactive') return Colors.red;
+    if (s == 'active') return Colors.green;
+    if (s == 'inactive') return Colors.grey;
+    return Colors.blueGrey;
   }
 
 
@@ -163,7 +177,6 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
       _error = null;
       _ongoing = const [];
       _past = const [];
-        _deactivated = const [];
     });
 
     try {
@@ -173,23 +186,23 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
       final rows = await _fetchBookingsWithVehicle(userId);
       final ongoing = <Map<String, dynamic>>[];
       final past = <Map<String, dynamic>>[];
-      final deactivated = <Map<String, dynamic>>[];
+      final blocked = <Map<String, dynamic>>[];
+
       for (final r in rows) {
-        final t = _type(r);
-        if (t == _OrderType.deactive) {
-          deactivated.add(r);
-        } else if (t == _OrderType.active && _isOngoing(r)) {
-          ongoing.add(r);
+        final st = (r['booking_status'] ?? '').toString();
+        final s = _normStatus(st);
+        if (s == 'deactive' || s == 'cancelled') {
+          blocked.add(r);
         } else {
-          past.add(r);
+          (_isOngoing(r) ? ongoing : past).add(r);
         }
       }
 
       if (!mounted) return;
       setState(() {
         _ongoing = ongoing;
+        _blocked = blocked;
         _past = past;
-        _deactivated = deactivated;
         _loading = false;
       });
     } catch (e) {
@@ -237,32 +250,6 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
                       ),
                     )
                   else ...[
-                    const _SectionHeader(
-                      title: 'Deactivated Orders (by Admin/Staff)',
-                      color: Colors.red,
-                    ),
-                    const SizedBox(height: 8),
-                    if (_deactivated.isEmpty)
-                      Text(
-                        'No deactivated orders.',
-                        style: TextStyle(color: Colors.grey.shade700),
-                      )
-                    else
-                      ..._deactivated.map(
-                        (r) => _OrderCard(
-                          row: r,
-                          statusText: 'Deactive',
-                          statusColor: Colors.red,
-                          durationText: 'Deactivated by admin',
-                          photoUrlBuilder: _vehiclePhotoPublicUrl,
-                          onTap: () => Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => MyOrderDetailsPage(booking: r),
-                            ),
-                          ),
-                        ),
-                      ),
-                    const SizedBox(height: 14),
                     const _SectionHeader(
                       title: 'Ongoing Orders Details',
                       color: Colors.green,
@@ -468,5 +455,3 @@ class _OrderCard extends StatelessWidget {
     );
   }
 }
-
-enum _OrderType { active, inactive, deactive }
