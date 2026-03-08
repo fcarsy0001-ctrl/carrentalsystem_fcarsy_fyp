@@ -548,29 +548,35 @@ class _PromotionAdminPageState extends State<PromotionAdminPage> {
     );
   }
 
-  Future<void> _takeBackAnnouncement(Map<String, dynamic> a) async {
+  Future<void> _deleteAnnouncement(Map<String, dynamic> a) async {
     final annId = (a['ann_id'] ?? '').toString().trim();
     if (annId.isEmpty) return;
 
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Take back announcement'),
+        title: const Text('Delete announcement'),
         content: Text('Take back announcement $annId?\n\nThis will set it to inactive (it will stop showing to users).'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Confirm')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete')),
         ],
       ),
     );
     if (ok != true) return;
 
     try {
-      await _supa.from('announcement').update({'active': false}).eq('ann_id', annId);
-      _toast('Announcement taken back');
+      await _supa.from('announcement').delete().eq('ann_id', annId);
+      _toast('Announcement deleted');
       await _refresh();
     } catch (e) {
-      _toast('Update failed: $e', bg: Colors.red);
+      try {
+        await _supa.from('announcement').update({'active': false}).eq('ann_id', annId);
+        _toast('Cannot hard delete. Announcement has been set to inactive instead.', bg: Colors.orange);
+        await _refresh();
+      } catch (e2) {
+        _toast('Delete failed: $e2', bg: Colors.red);
+      }
     }
   }
 
@@ -740,12 +746,12 @@ class _PromotionAdminPageState extends State<PromotionAdminPage> {
                               onSelected: (v) {
                                 if (v == 'edit') _openUpsertAnnouncement(initial: a);
                                 if (v == 'toggle') _toggleAnnouncementActive(a);
-                                if (v == 'delete') _takeBackAnnouncement(a);
+                                if (v == 'delete') _deleteAnnouncement(a);
                               },
                               itemBuilder: (ctx) => const [
                                 PopupMenuItem(value: 'edit', child: Text('Edit')),
                                 PopupMenuItem(value: 'toggle', child: Text('Toggle active')),
-                                PopupMenuItem(value: 'delete', child: Text('Take back (inactive)')),
+                                PopupMenuItem(value: 'delete', child: Text('Delete')),
                               ],
                             ),
                           ],

@@ -7,6 +7,7 @@ import '../services/driver_license_service.dart';
 import '../services/promotion_service.dart';
 import 'product_page.dart';
 import 'vehicle_browse_page.dart';
+import 'nearby_map_page.dart';
 
 /// Home screen (car rental) inspired by common car-sharing layouts
 /// (search + featured + car cards). Data is mocked for now.
@@ -319,9 +320,9 @@ class _HomePageState extends State<HomePage> {
                     icon: Icons.map_outlined,
                     title: 'Nearby',
                     subtitle: 'Explore zones',
-                    onTap: () {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Map view (coming soon)')),
+                    onTap: () async {
+                      await Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const NearbyMapPage()),
                       );
                     },
                   ),
@@ -586,6 +587,8 @@ class _VehicleCard extends StatelessWidget {
                   const SizedBox(height: 6),
                   Text(
                     vehicle.location.isEmpty ? '-' : vehicle.location,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
                   ),
                 ],
@@ -720,6 +723,8 @@ class _VehicleListTile extends StatelessWidget {
         title: Text(vehicle.title, style: const TextStyle(fontWeight: FontWeight.w800)),
         subtitle: Text(
           '${vehicle.plate.isEmpty ? '-' : vehicle.plate} • ${vehicle.location.isEmpty ? '-' : vehicle.location}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
         ),
         trailing: trailing,
       ),

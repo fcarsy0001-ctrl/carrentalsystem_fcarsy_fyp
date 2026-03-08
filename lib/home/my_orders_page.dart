@@ -24,6 +24,7 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
   List<Map<String, dynamic>> _ongoing = const [];
   List<Map<String, dynamic>> _past = const [];
   List<Map<String, dynamic>> _blocked = const [];
+  bool _shownDeactiveAlert = false;
 
   @override
   void initState() {
@@ -95,7 +96,7 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
   String _statusText(String status) {
     final s = _normStatus(status);
     if (s == 'cancelled') return 'Cancelled';
-    if (s == 'deactive') return 'Deactive by Admin';
+    if (s == 'deactive') return 'Deactive';
     if (s == 'active') return 'Active';
     if (s == 'inactive') return 'Inactive';
     return status.trim().isEmpty ? '-' : status;
@@ -205,6 +206,31 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
         _past = past;
         _loading = false;
       });
+
+      // Show alert if any order is deactivated by admin.
+      if (!_shownDeactiveAlert) {
+        final hasDeactive = blocked.any((r) => _normStatus((r['booking_status'] ?? '').toString()) == 'deactive');
+        if (hasDeactive) {
+          _shownDeactiveAlert = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            showDialog(
+              context: context,
+              builder: (_) => AlertDialog(
+                title: const Text('Order Deactivated'),
+                content: const Text('Please contact admin. Your order is deactive by admin.'),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('OK'),
+                  ),
+                ],
+              ),
+            );
+          });
+        }
+      }
+
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -275,7 +301,33 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
                           ),
                         ),
                       ),
-                    const SizedBox(height: 14),
+                                        const SizedBox(height: 14),
+                    const _SectionHeader(
+                      title: 'Deactive / Cancelled Orders',
+                      color: Colors.red,
+                    ),
+                    const SizedBox(height: 8),
+                    if (_blocked.isEmpty)
+                      Text(
+                        'No deactive/cancelled orders.',
+                        style: TextStyle(color: Colors.grey.shade700),
+                      )
+                    else
+                      ..._blocked.map(
+                        (r) => _OrderCard(
+                          row: r,
+                          statusText: _statusText((r['booking_status'] ?? '').toString()),
+                          statusColor: _statusColor((r['booking_status'] ?? '').toString()),
+                          durationText: 'Please contact admin',
+                          photoUrlBuilder: _vehiclePhotoPublicUrl,
+                          onTap: () => Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => MyOrderDetailsPage(booking: r),
+                            ),
+                          ),
+                        ),
+                      ),
+
                     _SectionHeader(
                       title: 'Past Orders Details',
                       color: cs.outline,

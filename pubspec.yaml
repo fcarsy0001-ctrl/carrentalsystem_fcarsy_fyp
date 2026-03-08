@@ -10,6 +10,10 @@ dependencies:
   flutter:
     sdk: flutter
 
+  flutter_map: ^6.1.0
+
+  latlong2: ^0.9.1
+
 
   image_picker: ^1.0.0
 
