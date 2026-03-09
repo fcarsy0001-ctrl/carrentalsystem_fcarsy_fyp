@@ -9,6 +9,7 @@ import 'reports_admin_page.dart';
 import 'user_management_page.dart';
 import 'leaser_admin_module_page.dart';
 import 'vehicle_admin_page.dart';
+import '../support/admin_support_page.dart';
 import '../core/widgets/simple_charts.dart';
 
 class AdminDashboardPage extends StatefulWidget {
@@ -163,6 +164,20 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                 ),
               ),
 
+              const SizedBox(height: 14),
+
+              _Section(
+                title: 'Support',
+                subtitle: 'Open the support inbox to reply, close, delete, or export chat files',
+                child: ElevatedButton.icon(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const AdminSupportPage()),
+                  ),
+                  icon: const Icon(Icons.support_agent_outlined),
+                  label: const Text('Open Support Inbox'),
+                ),
+              ),
+
               const SizedBox(height: 18),
 
               _Section(
@@ -206,6 +221,13 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                       label: 'Leasers',
                       onTap: () => Navigator.of(context).push(
                         MaterialPageRoute(builder: (_) => const LeaserAdminModulePage()),
+                      ),
+                    ),
+                    _QuickChip(
+                      icon: Icons.support_agent_outlined,
+                      label: 'Support',
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const AdminSupportPage()),
                       ),
                     ),
                   ],

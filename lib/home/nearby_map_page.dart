@@ -10,6 +10,10 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
+// NOTE: Requires pubspec.yaml dependency:
+//   geolocator: ^10.1.0 (or compatible)
+import 'package:geolocator/geolocator.dart';
+
 class NearbyMapPage extends StatefulWidget {
   const NearbyMapPage({super.key});
 
@@ -19,6 +23,8 @@ class NearbyMapPage extends StatefulWidget {
 
 class _NearbyMapPageState extends State<NearbyMapPage> {
   SupabaseClient get _supa => Supabase.instance.client;
+
+  final MapController _mapController = MapController();
 
   bool _loading = true;
   String? _error;
@@ -32,12 +38,86 @@ class _NearbyMapPageState extends State<NearbyMapPage> {
   LatLng _center = const LatLng(3.1390, 101.6869); // Kuala Lumpur fallback
   double _zoom = 11.5;
 
+  LatLng? _userLocation;
+  bool _locatingMe = false;
+  String? _locationError;
+
   bool _geocoding = false;
 
   @override
   void initState() {
     super.initState();
     _load();
+
+    // Try to show user location (will request permission only when needed).
+    // If user denies, we keep the map working normally.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _fetchMyLocation(moveMap: false, showSnack: false);
+    });
+  }
+
+  void _toast(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  Future<bool> _ensureLocationPermission({bool showSnack = true}) async {
+    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      setState(() => _locationError = 'Location services are disabled.');
+      if (showSnack) _toast('Please enable GPS/location services.');
+      return false;
+    }
+
+    var permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+
+    if (permission == LocationPermission.denied) {
+      setState(() => _locationError = 'Location permission denied.');
+      if (showSnack) _toast('Location permission denied.');
+      return false;
+    }
+
+    if (permission == LocationPermission.deniedForever) {
+      setState(() => _locationError = 'Location permission permanently denied.');
+      if (showSnack) {
+        _toast('Location permission permanently denied. Enable it in Settings.');
+      }
+      return false;
+    }
+
+    return true;
+  }
+
+  Future<void> _fetchMyLocation({required bool moveMap, bool showSnack = true}) async {
+    if (_locatingMe) return;
+    setState(() {
+      _locatingMe = true;
+      _locationError = null;
+    });
+
+    try {
+      final ok = await _ensureLocationPermission(showSnack: showSnack);
+      if (!ok) return;
+
+      final pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+      final ll = LatLng(pos.latitude, pos.longitude);
+
+      if (!mounted) return;
+      setState(() => _userLocation = ll);
+
+      if (moveMap) {
+        _mapController.move(ll, 15.5);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _locationError = e.toString());
+      if (showSnack) _toast('Failed to get your location.');
+    } finally {
+      if (mounted) setState(() => _locatingMe = false);
+    }
   }
 
   Future<void> _load() async {
@@ -223,6 +303,13 @@ class _NearbyMapPageState extends State<NearbyMapPage> {
         title: const Text('Nearby Cars'),
         actions: [
           IconButton(
+            tooltip: 'My Location',
+            onPressed: () => _fetchMyLocation(moveMap: true),
+            icon: _locatingMe
+                ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.my_location_rounded),
+          ),
+          IconButton(
             tooltip: 'Refresh',
             onPressed: _load,
             icon: const Icon(Icons.refresh_rounded),
@@ -253,6 +340,7 @@ class _NearbyMapPageState extends State<NearbyMapPage> {
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(12),
                         child: FlutterMap(
+                          mapController: _mapController,
                           options: MapOptions(
                             initialCenter: _center,
                             initialZoom: _zoom,
@@ -271,41 +359,66 @@ class _NearbyMapPageState extends State<NearbyMapPage> {
                               userAgentPackageName: 'car_rental_system_fyp',
                             ),
                             MarkerLayer(
-                              markers: _vehiclesByLocation.entries
-                                  .map((e) => MapEntry(e.key, _geoCache[e.key]))
-                                  .where((e) => e.value != null)
-                                  .map(
-                                    (e) => Marker(
-                                      point: e.value!,
-                                      width: 46,
-                                      height: 46,
-                                      child: GestureDetector(
-                                        onTap: () => _openLocationSheet(e.key),
-                                        child: Container(
-                                          decoration: BoxDecoration(
-                                            color: cs.primary.withOpacity(0.92),
-                                            shape: BoxShape.circle,
-                                            boxShadow: [
-                                              BoxShadow(
-                                                blurRadius: 10,
-                                                offset: const Offset(0, 4),
-                                                color: Colors.black.withOpacity(0.18),
-                                              ),
-                                            ],
+                              markers: [
+                                // user current location marker
+                                if (_userLocation != null)
+                                  Marker(
+                                    point: _userLocation!,
+                                    width: 44,
+                                    height: 44,
+                                    child: Container(
+                                      decoration: BoxDecoration(
+                                        color: Colors.blue.withOpacity(0.92),
+                                        shape: BoxShape.circle,
+                                        boxShadow: [
+                                          BoxShadow(
+                                            blurRadius: 10,
+                                            offset: const Offset(0, 4),
+                                            color: Colors.black.withOpacity(0.18),
                                           ),
-                                          alignment: Alignment.center,
-                                          child: Text(
-                                            '${_vehiclesByLocation[e.key]?.length ?? 0}',
-                                            style: TextStyle(
-                                              color: cs.onPrimary,
-                                              fontWeight: FontWeight.w900,
+                                        ],
+                                      ),
+                                      alignment: Alignment.center,
+                                      child: const Icon(Icons.person_pin_circle_rounded, color: Colors.white, size: 26),
+                                    ),
+                                  ),
+
+                                // vehicle location markers
+                                ..._vehiclesByLocation.entries
+                                    .map((e) => MapEntry(e.key, _geoCache[e.key]))
+                                    .where((e) => e.value != null)
+                                    .map(
+                                      (e) => Marker(
+                                        point: e.value!,
+                                        width: 46,
+                                        height: 46,
+                                        child: GestureDetector(
+                                          onTap: () => _openLocationSheet(e.key),
+                                          child: Container(
+                                            decoration: BoxDecoration(
+                                              color: cs.primary.withOpacity(0.92),
+                                              shape: BoxShape.circle,
+                                              boxShadow: [
+                                                BoxShadow(
+                                                  blurRadius: 10,
+                                                  offset: const Offset(0, 4),
+                                                  color: Colors.black.withOpacity(0.18),
+                                                ),
+                                              ],
+                                            ),
+                                            alignment: Alignment.center,
+                                            child: Text(
+                                              '${_vehiclesByLocation[e.key]?.length ?? 0}',
+                                              style: TextStyle(
+                                                color: cs.onPrimary,
+                                                fontWeight: FontWeight.w900,
+                                              ),
                                             ),
                                           ),
                                         ),
                                       ),
                                     ),
-                                  )
-                                  .toList(),
+                              ],
                             ),
                           ],
                         ),
@@ -326,6 +439,21 @@ class _NearbyMapPageState extends State<NearbyMapPage> {
                       ),
                     ],
                   ),
+                  if (_locationError != null) ...[
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Icon(Icons.gps_off_rounded, size: 18, color: Colors.red.shade700),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _locationError!,
+                            style: TextStyle(color: Colors.red.shade700, fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ],
               ),
             ),

@@ -22,6 +22,7 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
   bool _loading = true;
   String? _error;
   List<Map<String, dynamic>> _ongoing = const [];
+  List<Map<String, dynamic>> _incoming = const [];
   List<Map<String, dynamic>> _past = const [];
   List<Map<String, dynamic>> _blocked = const [];
   bool _shownDeactiveAlert = false;
@@ -54,28 +55,48 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
     }
   }
 
-  bool _isOngoing(Map<String, dynamic> r) {
-    final end = _dt(r['rental_end']);
-    if (end == null) return false;
-    final st = (r['booking_status'] ?? '').toString().toLowerCase();
-    if (st.contains('cancel') || st.contains('deactive') || st.contains('fail') || st.contains('reject')) {
-      return false;
-    }
-    return DateTime.now().isBefore(end);
+  bool _isBlocked(Map<String, dynamic> r) {
+    final s = _normStatus((r['booking_status'] ?? '').toString());
+    return s == 'deactive' || s == 'cancelled';
   }
 
-  String _hoursLeftText(Map<String, dynamic> r) {
+  bool _isIncoming(Map<String, dynamic> r) {
+    final start = _dt(r['rental_start']);
+    final end = _dt(r['rental_end']);
+    if (start == null || end == null) return false;
+    if (_isBlocked(r)) return false;
+    final now = DateTime.now();
+    return now.isBefore(start);
+  }
+
+  bool _isOngoing(Map<String, dynamic> r) {
+    final start = _dt(r['rental_start']);
+    final end = _dt(r['rental_end']);
+    if (start == null || end == null) return false;
+    if (_isBlocked(r)) return false;
+    final now = DateTime.now();
+    return (now.isAtSameMomentAs(start) || now.isAfter(start)) && now.isBefore(end);
+  }
+
+  String _durationText(Map<String, dynamic> r) {
     final start = _dt(r['rental_start']);
     final end = _dt(r['rental_end']);
     if (start == null || end == null) return '-';
 
     final now = DateTime.now();
-    // If booking hasn't started yet, show the planned rental duration (end - start)
-    // rather than a long countdown to the end date.
-    final ref = now.isBefore(start) ? start : now;
 
-    final diff = end.difference(ref);
-    if (diff.isNegative) return '0 hour left';
+    if (_isIncoming(r)) {
+      final diff = start.difference(now);
+      if (diff.isNegative) return 'Starting soon';
+      final totalMins = diff.inMinutes;
+      final days = totalMins ~/ (60 * 24);
+      final hours = (totalMins % (60 * 24)) ~/ 60;
+      if (days > 0) return 'Starts in $days day ${hours}h';
+      return 'Starts in ${math.max(0, hours)} hour';
+    }
+
+    final diff = end.difference(now);
+    if (diff.isNegative) return 'Completed';
 
     final totalMins = diff.inMinutes;
     final days = totalMins ~/ (60 * 24);
@@ -177,7 +198,9 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
       _loading = true;
       _error = null;
       _ongoing = const [];
+      _incoming = const [];
       _past = const [];
+      _blocked = const [];
     });
 
     try {
@@ -186,22 +209,26 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
 
       final rows = await _fetchBookingsWithVehicle(userId);
       final ongoing = <Map<String, dynamic>>[];
+      final incoming = <Map<String, dynamic>>[];
       final past = <Map<String, dynamic>>[];
       final blocked = <Map<String, dynamic>>[];
 
       for (final r in rows) {
-        final st = (r['booking_status'] ?? '').toString();
-        final s = _normStatus(st);
-        if (s == 'deactive' || s == 'cancelled') {
+        if (_isBlocked(r)) {
           blocked.add(r);
+        } else if (_isIncoming(r)) {
+          incoming.add(r);
+        } else if (_isOngoing(r)) {
+          ongoing.add(r);
         } else {
-          (_isOngoing(r) ? ongoing : past).add(r);
+          past.add(r);
         }
       }
 
       if (!mounted) return;
       setState(() {
         _ongoing = ongoing;
+        _incoming = incoming;
         _blocked = blocked;
         _past = past;
         _loading = false;
@@ -277,7 +304,7 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
                     )
                   else ...[
                     const _SectionHeader(
-                      title: 'Ongoing Orders Details',
+                      title: 'Ongoing Orders',
                       color: Colors.green,
                     ),
                     const SizedBox(height: 8),
@@ -290,9 +317,9 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
                       ..._ongoing.map(
                         (r) => _OrderCard(
                           row: r,
-                          statusText: 'Active',
+                          statusText: 'Ongoing',
                           statusColor: Colors.green,
-                          durationText: _hoursLeftText(r),
+                          durationText: _durationText(r),
                           photoUrlBuilder: _vehiclePhotoPublicUrl,
                           onTap: () => Navigator.of(context).push(
                             MaterialPageRoute(
@@ -301,15 +328,41 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
                           ),
                         ),
                       ),
-                                        const SizedBox(height: 14),
+                    const SizedBox(height: 14),
                     const _SectionHeader(
-                      title: 'Deactive / Cancelled Orders',
+                      title: 'Incoming Orders',
+                      color: Colors.blue,
+                    ),
+                    const SizedBox(height: 8),
+                    if (_incoming.isEmpty)
+                      Text(
+                        'No incoming orders.',
+                        style: TextStyle(color: Colors.grey.shade700),
+                      )
+                    else
+                      ..._incoming.map(
+                        (r) => _OrderCard(
+                          row: r,
+                          statusText: 'Incoming',
+                          statusColor: Colors.blue,
+                          durationText: _durationText(r),
+                          photoUrlBuilder: _vehiclePhotoPublicUrl,
+                          onTap: () => Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => MyOrderDetailsPage(booking: r),
+                            ),
+                          ),
+                        ),
+                      ),
+                    const SizedBox(height: 14),
+                    const _SectionHeader(
+                      title: 'Deactive / Cancel Orders',
                       color: Colors.red,
                     ),
                     const SizedBox(height: 8),
                     if (_blocked.isEmpty)
                       Text(
-                        'No deactive/cancelled orders.',
+                        'No deactive/cancel orders.',
                         style: TextStyle(color: Colors.grey.shade700),
                       )
                     else
@@ -327,15 +380,15 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
                           ),
                         ),
                       ),
-
+                    const SizedBox(height: 14),
                     _SectionHeader(
-                      title: 'Past Orders Details',
+                      title: 'Inactive Orders',
                       color: cs.outline,
                     ),
                     const SizedBox(height: 8),
                     if (_past.isEmpty)
                       Text(
-                        'No past orders.',
+                        'No inactive orders.',
                         style: TextStyle(color: Colors.grey.shade700),
                       )
                     else

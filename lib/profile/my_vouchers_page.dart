@@ -55,18 +55,28 @@ class _MyVouchersPageState extends State<MyVouchersPage> {
 
   Future<void> _claimPromo(Map<String, dynamic> promo) async {
     final promoId = (promo['promo_id'] ?? '').toString();
+    final promoName = _promoTitle(promo);
     if (promoId.isEmpty) return;
     try {
-      await _svc.claimVoucher(promoId: promoId);
+      final result = await _svc.claimVoucherWithStatus(promoId: promoId);
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('Voucher claimed')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            result.alreadyClaimed ? 'Already claimed: $promoName' : 'Voucher claimed: $promoName',
+          ),
+        ),
+      );
       await _refresh();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text('Claim failed: $e')));
     }
+  }
+
+  Widget _statusChip(bool used) {
+    return Chip(label: Text(used ? 'Used' : 'Claimed'));
   }
 
   @override
@@ -101,27 +111,26 @@ class _MyVouchersPageState extends State<MyVouchersPage> {
                     .where((e) => e.isNotEmpty)
                     .toSet();
 
-                // Hide vouchers after user uses them.
-                final activeRows = myRows.where((uv) => !_isUsed(uv)).toList();
-
                 return ListView(
                   padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
                   children: [
-                    const Text('My Vouchers',
-                        style: TextStyle(fontWeight: FontWeight.w900)),
+                    const Text(
+                      'Claimed Vouchers',
+                      style: TextStyle(fontWeight: FontWeight.w900),
+                    ),
                     const SizedBox(height: 10),
-
-                    if (activeRows.isEmpty)
+                    if (myRows.isEmpty)
                       Text(
-                        'No active vouchers.',
+                        'No claimed vouchers yet.',
                         style: TextStyle(color: Colors.grey.shade700),
                       )
                     else
                       Column(
-                        children: activeRows.map((uv) {
+                        children: myRows.map((uv) {
                           final promo = (uv['promotion'] is Map)
                               ? Map<String, dynamic>.from(uv['promotion'] as Map)
                               : <String, dynamic>{};
+                          final used = _isUsed(uv);
                           return Card(
                             child: ListTile(
                               title: Text(
@@ -129,31 +138,32 @@ class _MyVouchersPageState extends State<MyVouchersPage> {
                                 style: const TextStyle(fontWeight: FontWeight.w800),
                               ),
                               subtitle: Text(_promoSubtitle(promo)),
-                              trailing: const Chip(label: Text('Active')),
+                              trailing: _statusChip(used),
                             ),
                           );
                         }).toList(),
                       ),
-
                     const SizedBox(height: 18),
-                    const Text('Available Promotions',
-                        style: TextStyle(fontWeight: FontWeight.w900)),
+                    const Text(
+                      'Available Promotions',
+                      style: TextStyle(fontWeight: FontWeight.w900),
+                    ),
                     const SizedBox(height: 10),
                     FutureBuilder<List<Map<String, dynamic>>>(
                       future: _promoFuture,
                       builder: (context, promoSnap) {
                         if (promoSnap.connectionState != ConnectionState.done) {
                           return const Center(
-                              child: Padding(
-                            padding: EdgeInsets.symmetric(vertical: 12),
-                            child: CircularProgressIndicator(),
-                          ));
+                            child: Padding(
+                              padding: EdgeInsets.symmetric(vertical: 12),
+                              child: CircularProgressIndicator(),
+                            ),
+                          );
                         }
 
                         final promos = (promoSnap.data ?? const [])
                             .where((p) {
                               final id = (p['promo_id'] ?? '').toString();
-                              // Hide already-claimed promos (including used), so it doesn't reappear.
                               return id.isNotEmpty && !claimedPromoIds.contains(id);
                             })
                             .toList();

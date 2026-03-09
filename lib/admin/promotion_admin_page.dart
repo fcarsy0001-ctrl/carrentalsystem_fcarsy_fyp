@@ -81,6 +81,55 @@ class _PromotionAdminPageState extends State<PromotionAdminPage> {
     return 'RM${val.toStringAsFixed(0)}';
   }
 
+
+  String _recipientSummary(Map<String, dynamic> p) {
+    final targetUserId = (p['target_user_id'] ?? '').toString().trim();
+    if (targetUserId.isNotEmpty) return 'Specific user: $targetUserId';
+
+    final scope = (p['send_scope'] ?? '').toString().trim().toLowerCase();
+    if (scope == 'specific' || scope == 'user' || scope == 'single') {
+      return 'Specific user';
+    }
+
+    final sendToAll = p['send_to_all'];
+    if (sendToAll == false || sendToAll.toString().toLowerCase() == 'false') {
+      return 'Limited audience';
+    }
+    return 'All users';
+  }
+
+  Future<List<String>> _saveVoucherRecord({
+    required String promoId,
+    required Map<String, dynamic> payload,
+    required bool isEdit,
+  }) async {
+    final removed = <String>[];
+    final optionalColumns = ['max_redeems', 'send_scope', 'target_user_id', 'send_to_all'];
+
+    while (true) {
+      try {
+        if (isEdit) {
+          await _supa.from('promotion').update(payload).eq('promo_id', promoId);
+        } else {
+          await _supa.from('promotion').insert({'promo_id': promoId, ...payload});
+        }
+        return removed;
+      } catch (e) {
+        final msg = e.toString().toLowerCase();
+        String? missingKey;
+        for (final key in optionalColumns) {
+          if (payload.containsKey(key) && msg.contains(key.toLowerCase()) && msg.contains('does not exist')) {
+            missingKey = key;
+            break;
+          }
+        }
+        if (missingKey == null) rethrow;
+        payload.remove(missingKey);
+        removed.add(missingKey);
+      }
+    }
+  }
+
   Future<DateTime?> _pickDate({required DateTime? current, DateTime? min}) async {
     final today = _today();
     final first = min ?? today;
@@ -122,8 +171,13 @@ class _PromotionAdminPageState extends State<PromotionAdminPage> {
     final minCtrl = TextEditingController(text: (initial?['min_spend'] ?? '0').toString());
     final maxCtrl = TextEditingController(text: (initial?['max_discount'] ?? '').toString());
     final maxRedeemCtrl = TextEditingController(text: (initial?['max_redeems'] ?? '').toString());
+    final targetUserCtrl = TextEditingController(text: (initial?['target_user_id'] ?? '').toString());
 
     var active = (initial?['active'] == null) ? true : (initial?['active'] == true);
+    var sendScope = ((initial?['target_user_id'] ?? '').toString().trim().isNotEmpty ||
+            (initial?['send_scope'] ?? '').toString().trim().toLowerCase() == 'specific')
+        ? 'specific'
+        : 'all';
     var type = (initial?['discount_type'] ?? 'percent').toString().toLowerCase();
     if (type != 'percent' && type != 'amount') type = 'percent';
 
@@ -233,6 +287,48 @@ class _PromotionAdminPageState extends State<PromotionAdminPage> {
                     ),
                   ),
                   const SizedBox(height: 10),
+                  DropdownButtonFormField<String>(
+                    value: sendScope,
+                    decoration: const InputDecoration(
+                      labelText: 'Send voucher to',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: const [
+                      DropdownMenuItem(value: 'all', child: Text('All users')),
+                      DropdownMenuItem(value: 'specific', child: Text('Specific user ID')),
+                    ],
+                    onChanged: (value) {
+                      setLocal(() {
+                        sendScope = value ?? 'all';
+                        if (sendScope == 'all') {
+                          targetUserCtrl.clear();
+                        }
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 10),
+                  if (sendScope == 'specific')
+                    TextField(
+                      controller: targetUserCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Target user ID',
+                        hintText: 'e.g. U001',
+                        border: OutlineInputBorder(),
+                      ),
+                    )
+                  else
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Theme.of(ctx2).colorScheme.outlineVariant),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Text(
+                        'This voucher will appear in Available Promotions for all users. Users can still choose whether to claim it.',
+                      ),
+                    ),
+                  const SizedBox(height: 10),
                   Row(
                     children: [
                       Expanded(
@@ -298,6 +394,25 @@ class _PromotionAdminPageState extends State<PromotionAdminPage> {
                         final promoId = isEdit ? (initial!['promo_id'] ?? '').toString() : _shortId('PR');
                         if (promoId.trim().isEmpty) return _toast('Missing promo_id.', bg: Colors.red);
 
+                        final targetUserId = targetUserCtrl.text.trim();
+                        if (sendScope == 'specific' && targetUserId.isEmpty) {
+                          return _toast('User ID is required for specific user send.', bg: Colors.red);
+                        }
+                        if (sendScope == 'specific') {
+                          try {
+                            final appUser = await _supa
+                                .from('app_user')
+                                .select('user_id')
+                                .eq('user_id', targetUserId)
+                                .maybeSingle();
+                            if (appUser == null) {
+                              return _toast('User ID not found.', bg: Colors.red);
+                            }
+                          } catch (e) {
+                            return _toast('Cannot verify user ID: $e', bg: Colors.red);
+                          }
+                        }
+
                         final payload = <String, dynamic>{
                           'code': code,
                           'title': titleCtrl.text.trim(),
@@ -309,37 +424,36 @@ class _PromotionAdminPageState extends State<PromotionAdminPage> {
                           'start_at': start?.toIso8601String(),
                           'end_at': end?.toIso8601String(),
                           'active': active,
+                          'send_scope': sendScope,
+                          'send_to_all': sendScope == 'all',
+                          'target_user_id': sendScope == 'specific' ? targetUserId : null,
                         };
                         if (maxRedeem != null) {
                           payload['max_redeems'] = maxRedeem;
                         }
 
                         try {
-                          if (isEdit) {
-                            await _supa.from('promotion').update(payload).eq('promo_id', promoId);
-                          } else {
-                            await _supa.from('promotion').insert({'promo_id': promoId, ...payload});
+                          final removed = await _saveVoucherRecord(
+                            promoId: promoId,
+                            payload: payload,
+                            isEdit: isEdit,
+                          );
+                          if (removed.isNotEmpty) {
+                            final labels = <String>[];
+                            if (removed.contains('max_redeems')) labels.add('redeem limit');
+                            if (removed.contains('send_scope') || removed.contains('send_to_all') || removed.contains('target_user_id')) {
+                              labels.add('direct send to Available Promotions');
+                            }
+                            if (labels.isNotEmpty) {
+                              _toast(
+                                'Saved, but DB is missing: ${labels.join(', ')}.',
+                                bg: Colors.orange,
+                              );
+                            }
                           }
                         } catch (e) {
-                          // Allow fallback if the DB does not have max_redeems yet.
-                          final msg = e.toString();
-                          if (msg.contains('max_redeems') && msg.contains('does not exist')) {
-                            payload.remove('max_redeems');
-                            try {
-                              if (isEdit) {
-                                await _supa.from('promotion').update(payload).eq('promo_id', promoId);
-                              } else {
-                                await _supa.from('promotion').insert({'promo_id': promoId, ...payload});
-                              }
-                              _toast('Saved, but DB has no max_redeems column. Add it to enable redeem limit.', bg: Colors.orange);
-                            } catch (e2) {
-                              _toast('Save voucher failed: $e2', bg: Colors.red);
-                              return;
-                            }
-                          } else {
-                            _toast('Save voucher failed: $e', bg: Colors.red);
-                            return;
-                          }
+                          _toast('Save voucher failed: $e', bg: Colors.red);
+                          return;
                         }
 
                         if (!mounted) return;
@@ -670,7 +784,8 @@ class _PromotionAdminPageState extends State<PromotionAdminPage> {
                         ),
                         subtitle: Text(
                           'Discount: ${_fmtDiscount(p)}\n'
-                          'Date: ${_fmtDate(start)} → ${_fmtDate(end)}$maxRedeemsStr',
+                          'Date: ${_fmtDate(start)} → ${_fmtDate(end)}$maxRedeemsStr\n'
+                          'Available Promotions: ${_recipientSummary(p)}',
                         ),
                         isThreeLine: true,
                         trailing: Row(

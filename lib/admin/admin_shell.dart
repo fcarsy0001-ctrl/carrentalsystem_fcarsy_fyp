@@ -11,6 +11,7 @@ import 'reports_admin_page.dart';
 import 'staff_admin_page.dart';
 import 'user_management_page.dart';
 import 'vehicle_admin_page.dart';
+import '../support/admin_support_page.dart';
 
 class AdminShell extends StatefulWidget {
   const AdminShell({super.key, required this.isSuperAdmin});
@@ -48,6 +49,7 @@ class _AdminShellState extends State<AdminShell> {
       const _NavItem('Vehicles', Icons.directions_car_outlined, VehicleAdminPage(embedded: true)),
       const _NavItem('Users', Icons.people_alt_outlined, UserManagementPage()),
       const _NavItem('Promotions', Icons.local_offer_outlined, PromotionAdminPage()),
+      const _NavItem('Support', Icons.support_agent_outlined, AdminSupportPage(embedded: true)),
       if (widget.isSuperAdmin) const _NavItem('Staff', Icons.supervisor_account_outlined, StaffAdminPage()),
     ];
 

@@ -26,6 +26,7 @@ class _HomePageState extends State<HomePage> {
 
   late Future<List<Vehicle>> _vehiclesFuture;
   late Future<List<Map<String, dynamic>>> _annFuture;
+  late Future<Set<String>> _claimedPromoIdsFuture;
 
   bool _hideAnnouncement = false;
 
@@ -35,11 +36,17 @@ class _HomePageState extends State<HomePage> {
     _refreshDriverLicense();
     _vehiclesFuture = _loadVehicles();
     _annFuture = PromotionService(_supa).fetchActiveAnnouncements();
+    _claimedPromoIdsFuture = PromotionService(_supa).fetchClaimedPromoIds();
   }
 
   Future<void> _refreshAnnouncements() async {
     setState(() => _annFuture = PromotionService(_supa).fetchActiveAnnouncements());
     await _annFuture;
+  }
+
+  Future<void> _refreshClaimedPromos() async {
+    setState(() => _claimedPromoIdsFuture = PromotionService(_supa).fetchClaimedPromoIds());
+    await _claimedPromoIdsFuture;
   }
 
   Future<List<Vehicle>> _loadVehicles() async {
@@ -94,6 +101,7 @@ class _HomePageState extends State<HomePage> {
     );
     await _refreshDriverLicense();
     await _refreshVehicles();
+    await _refreshClaimedPromos();
   }
 
   // Vouchers are accessed from Profile > My Vouchers only.
@@ -256,43 +264,67 @@ class _HomePageState extends State<HomePage> {
                   final title = (a['title'] ?? 'Announcement').toString();
                   final msg = (a['message'] ?? '').toString();
                   final promo = (a['promo_code'] ?? '').toString().trim();
-                  return _AnnouncementBanner(
-                    title: title,
-                    message: msg,
-                    promoCode: promo.isEmpty ? null : promo,
-                    onDismiss: () => setState(() => _hideAnnouncement = true),
-                    onClaim: promo.isEmpty
-                        ? null
-                        : () async {
-                            // Claim voucher by promo code (best-effort).
-                            try {
-                              final svc = PromotionService(_supa);
-                              final p = await svc.getPromotionByCode(promo);
-                              final pid = (p?['promo_id'] ?? '').toString();
-                              if (pid.isEmpty) {
-                                if (!mounted) return;
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(content: Text('Voucher not found.')),
-                                );
-                                return;
-                              }
-                              await svc.claimVoucher(promoId: pid);
-                              if (!mounted) return;
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(content: Text('Voucher claimed: $promo')),
-                              );
-                            } catch (e) {
-                              if (!mounted) return;
-                              ScaffoldMessenger.of(context)
-                                  .showSnackBar(SnackBar(content: Text('Claim failed: $e')));
-                            }
-                          },
+                  if (promo.isEmpty) {
+                    return _AnnouncementBanner(
+                      title: title,
+                      message: msg,
+                      promoCode: null,
+                      onDismiss: () => setState(() => _hideAnnouncement = true),
+                    );
+                  }
+
+                  return FutureBuilder<Map<String, dynamic>?>(
+                    future: PromotionService(_supa).getPromotionByCode(promo),
+                    builder: (context, promoSnap) {
+                      final promoRow = promoSnap.data;
+                      final promoId = (promoRow?['promo_id'] ?? '').toString().trim();
+                      return FutureBuilder<Set<String>>(
+                        future: _claimedPromoIdsFuture,
+                        builder: (context, claimedSnap) {
+                          final claimedIds = claimedSnap.data ?? const <String>{};
+                          final alreadyClaimed =
+                              promoId.isNotEmpty && claimedIds.contains(promoId);
+                          return _AnnouncementBanner(
+                            title: title,
+                            message: msg,
+                            promoCode: promo,
+                            onDismiss: () => setState(() => _hideAnnouncement = true),
+                            showClaimButton: true,
+                            claimLabel: alreadyClaimed ? 'Already claimed' : 'Claim',
+                            onClaim: alreadyClaimed || promoId.isEmpty
+                                ? null
+                                : () async {
+                                    try {
+                                      final svc = PromotionService(_supa);
+                                      final result = await svc.claimVoucherWithStatus(promoId: promoId);
+                                      if (!mounted) return;
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                            result.alreadyClaimed
+                                                ? 'Already claimed: $promo'
+                                                : 'Voucher claimed: $promo',
+                                          ),
+                                        ),
+                                      );
+                                      await _refreshClaimedPromos();
+                                    } catch (e) {
+                                      if (!mounted) return;
+                                      ScaffoldMessenger.of(context)
+                                          .showSnackBar(SnackBar(content: Text('Claim failed: $e')));
+                                    }
+                                  },
+                          );
+                        },
+                      );
+                    },
                   );
                 },
               ),
 
             // (Removed) Voucher quick access from Home.
             // Users can view/claim vouchers in Profile > My Vouchers.
+
 
             // Featured
             _FeaturedBanner(
@@ -609,6 +641,8 @@ class _AnnouncementBanner extends StatelessWidget {
     this.promoCode,
     required this.onDismiss,
     this.onClaim,
+    this.showClaimButton = false,
+    this.claimLabel = 'Claim',
   });
 
   final String title;
@@ -616,6 +650,8 @@ class _AnnouncementBanner extends StatelessWidget {
   final String? promoCode;
   final VoidCallback onDismiss;
   final VoidCallback? onClaim;
+  final bool showClaimButton;
+  final String claimLabel;
 
   @override
   Widget build(BuildContext context) {
@@ -666,10 +702,10 @@ class _AnnouncementBanner extends StatelessWidget {
                   ),
                 ),
               const Spacer(),
-              if (onClaim != null)
+              if (showClaimButton)
                 FilledButton.tonal(
                   onPressed: onClaim,
-                  child: const Text('Claim'),
+                  child: Text(claimLabel),
                 ),
             ],
           ),

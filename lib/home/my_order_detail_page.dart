@@ -89,29 +89,37 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
     return s;
   }
 
-  bool get _isTimeActive {
+  bool get _isIncoming {
+    final start = _dt(_b['rental_start']);
     final end = _dt(_b['rental_end']);
-    if (end == null) return false;
-    return DateTime.now().isBefore(end);
+    if (start == null || end == null) return false;
+    final now = DateTime.now();
+    return now.isBefore(start);
+  }
+
+  bool get _isOngoing {
+    final start = _dt(_b['rental_start']);
+    final end = _dt(_b['rental_end']);
+    if (start == null || end == null) return false;
+    final now = DateTime.now();
+    return (now.isAtSameMomentAs(start) || now.isAfter(start)) && now.isBefore(end);
   }
 
   String get _statusLabel {
     final s = _normStatus(_rawStatus);
     if (s == 'cancelled') return 'Cancelled';
     if (s == 'deactive') return 'Deactive by Admin';
-    // If booking_status explicitly says Active/Inactive, respect it
-    if (s == 'active') return 'Active';
-    if (s == 'inactive') return 'Inactive';
-    // Otherwise fall back to time-based
-    return _isTimeActive ? 'Active' : 'Inactive';
+    if (_isIncoming) return 'Incoming';
+    if (_isOngoing) return 'Ongoing';
+    return 'Inactive';
   }
 
   Color get _statusColor {
     final s = _normStatus(_rawStatus);
     if (s == 'cancelled' || s == 'deactive') return Colors.red;
-    if (s == 'inactive') return Colors.grey;
-    if (s == 'active') return Colors.green;
-    return _isTimeActive ? Colors.green : Colors.grey;
+    if (_isIncoming) return Colors.blue;
+    if (_isOngoing) return Colors.green;
+    return Colors.grey;
   }
 
   String _timeRangeText() {
@@ -122,17 +130,28 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
   }
 
   String _hoursLeftText() {
+    final status = _normStatus(_rawStatus);
+    if (status == 'cancelled') return 'Cancelled';
+    if (status == 'deactive') return 'Please contact admin';
+
     final s = _dt(_b['rental_start']);
     final e = _dt(_b['rental_end']);
     if (s == null || e == null) return '-';
 
     final now = DateTime.now();
-    // If booking hasn't started yet, show planned duration (end - start)
-    // rather than a long countdown to the end date.
-    final ref = now.isBefore(s) ? s : now;
 
-    final diff = e.difference(ref);
-    if (diff.isNegative) return '0 hour left';
+    if (_isIncoming) {
+      final diff = s.difference(now);
+      if (diff.isNegative) return 'Starting soon';
+      final totalMins = diff.inMinutes;
+      final days = totalMins ~/ (60 * 24);
+      final hours = (totalMins % (60 * 24)) ~/ 60;
+      if (days > 0) return 'Starts in $days day ${hours}h';
+      return 'Starts in ${math.max(0, hours)} hour';
+    }
+
+    final diff = e.difference(now);
+    if (diff.isNegative) return 'Completed';
     final totalMins = diff.inMinutes;
     final days = totalMins ~/ (60 * 24);
     final hours = (totalMins % (60 * 24)) ~/ 60;
@@ -356,7 +375,7 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
                   title: 'Time',
                   trailing: Text(
                     _hoursLeftText(),
-                    style: TextStyle(color: Colors.green.shade800, fontWeight: FontWeight.w800, fontSize: 12),
+                    style: TextStyle(color: _statusColor, fontWeight: FontWeight.w800, fontSize: 12),
                   ),
                   child: Text(
                     _timeRangeText(),
