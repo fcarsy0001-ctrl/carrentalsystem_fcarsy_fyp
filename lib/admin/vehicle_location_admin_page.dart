@@ -1,16 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-/// Admin: Manage vehicle locations (dropdown source for vehicle_location).
-///
-/// Back-end expectation:
-/// - Table: vehicle_location
-///   - location_id uuid primary key default gen_random_uuid()
-///   - location_name text unique not null
-///   - is_active boolean not null default true
-///   - created_at timestamptz not null default now()
+import 'widgets/admin_ui.dart';
+
+/// Admin: Manage location master data used by vehicles.
 class VehicleLocationAdminPage extends StatefulWidget {
-  const VehicleLocationAdminPage({super.key});
+  const VehicleLocationAdminPage({super.key, this.embedded = false});
+
+  final bool embedded;
 
   @override
   State<VehicleLocationAdminPage> createState() => _VehicleLocationAdminPageState();
@@ -51,41 +48,47 @@ class _VehicleLocationAdminPageState extends State<VehicleLocationAdminPage> {
         _rows = list;
         _loading = false;
       });
-    } catch (e) {
+    } catch (error) {
       if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        _error = error.toString();
         _loading = false;
       });
     }
   }
 
   Future<void> _addLocation() async {
-    final ctrl = TextEditingController();
+    final controller = TextEditingController();
     try {
-      final ok = await showDialog<bool>(
+      final confirmed = await showDialog<bool>(
         context: context,
         builder: (_) => AlertDialog(
           title: const Text('Add Location'),
           content: TextField(
-            controller: ctrl,
+            controller: controller,
             autofocus: true,
             decoration: const InputDecoration(
               labelText: 'Location name / address',
-              hintText: 'e.g. 6, Jalan P. Ramlee, Kuala Lumpur',
+              hintText: 'e.g. TAR UMT Main Branch',
             ),
             minLines: 1,
             maxLines: 3,
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Add')),
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Add'),
+            ),
           ],
         ),
       );
 
-      if (ok != true) return;
-      final name = ctrl.text.trim();
+      if (confirmed != true) return;
+      final name = controller.text.trim();
       if (name.isEmpty) return;
 
       await _supa.from('vehicle_location').insert({
@@ -94,60 +97,70 @@ class _VehicleLocationAdminPageState extends State<VehicleLocationAdminPage> {
       });
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Location added')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Location added')),
+      );
       await _load();
-    } catch (e) {
+    } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Add failed: $e'), backgroundColor: Colors.red),
+        SnackBar(content: Text('Add failed: $error'), backgroundColor: Colors.red),
       );
     } finally {
-      ctrl.dispose();
+      controller.dispose();
     }
   }
 
-  Future<void> _toggleActive(Map<String, dynamic> row, bool v) async {
+  Future<void> _toggleActive(Map<String, dynamic> row, bool value) async {
     final id = (row['location_id'] ?? '').toString();
     if (id.isEmpty) return;
     try {
-      await _supa.from('vehicle_location').update({'is_active': v}).eq('location_id', id);
+      await _supa.from('vehicle_location').update({'is_active': value}).eq('location_id', id);
       await _load();
-    } catch (e) {
+    } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Update failed: $e'), backgroundColor: Colors.red),
+        SnackBar(content: Text('Update failed: $error'), backgroundColor: Colors.red),
       );
     }
   }
 
   Future<void> _delete(Map<String, dynamic> row) async {
     final id = (row['location_id'] ?? '').toString();
-    if (id.isEmpty) return;
     final name = (row['location_name'] ?? '').toString();
+    if (id.isEmpty) return;
 
-    final ok = await showDialog<bool>(
+    final confirmed = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
         title: const Text('Delete location?'),
         content: Text('Delete: $name'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Delete')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
         ],
       ),
     );
 
-    if (ok != true) return;
+    if (confirmed != true) return;
 
     try {
       await _supa.from('vehicle_location').delete().eq('location_id', id);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Deleted')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Location deleted')),
+      );
       await _load();
-    } catch (e) {
+    } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Delete failed: $e'), backgroundColor: Colors.red),
+        SnackBar(content: Text('Delete failed: $error'), backgroundColor: Colors.red),
       );
     }
   }
@@ -160,23 +173,17 @@ create table if not exists public.vehicle_location (
   is_active boolean not null default true,
   created_at timestamp with time zone not null default now()
 );
-
--- seed (example)
-insert into public.vehicle_location (location_name) values
-('6, Jalan P. Ramlee, 53000 Kuala Lumpur'),
-('111-109, Jalan Malinja 3, Taman Bunga Raya, 53000 Kuala Lumpur')
-on conflict (location_name) do nothing;
 ''';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          'It looks like table "vehicle_location" is missing (or blocked by RLS).',
+          'The vehicle_location table is missing or blocked by RLS.',
           style: TextStyle(color: Colors.red.shade700, fontWeight: FontWeight.w800),
         ),
         const SizedBox(height: 8),
-        const Text('Create it in Supabase SQL Editor (minimum):'),
+        const Text('Create it in Supabase SQL Editor:'),
         const SizedBox(height: 8),
         Container(
           width: double.infinity,
@@ -191,15 +198,106 @@ on conflict (location_name) do nothing;
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
+  Widget _buildList() {
     final hasTableMissing = (_error ?? '').toLowerCase().contains('vehicle_location') &&
         ((_error ?? '').toLowerCase().contains('does not exist') ||
             (_error ?? '').toLowerCase().contains('relation'));
 
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_error != null) {
+      return ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Text(_error!, style: TextStyle(color: Colors.red.shade700)),
+          const SizedBox(height: 12),
+          if (hasTableMissing) _tableMissingHint(),
+        ],
+      );
+    }
+
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+        children: [
+          if (_rows.isEmpty)
+            const AdminCard(
+              child: Padding(
+                padding: EdgeInsets.all(18),
+                child: Text('No locations yet. Add pickup, branch, or parking locations here.'),
+              ),
+            )
+          else
+            ..._rows.map((row) {
+              final name = (row['location_name'] ?? '').toString();
+              final active = (row['is_active'] as bool?) ?? true;
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: AdminCard(
+                  child: ListTile(
+                    title: Text(name, style: const TextStyle(fontWeight: FontWeight.w800)),
+                    subtitle: Text(active ? 'Active location' : 'Inactive location'),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Switch(
+                          value: active,
+                          onChanged: (value) => _toggleActive(row, value),
+                        ),
+                        IconButton(
+                          tooltip: 'Delete',
+                          onPressed: () => _delete(row),
+                          icon: const Icon(Icons.delete_outline),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            }),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final body = _buildList();
+
+    if (widget.embedded) {
+      return Column(
+        children: [
+          AdminModuleHeader(
+            icon: Icons.place_outlined,
+            title: 'Location Management',
+            subtitle: 'Manage the active branch, pickup, and parking locations used across vehicles.',
+            actions: [
+              IconButton(
+                tooltip: 'Refresh',
+                onPressed: _load,
+                icon: const Icon(Icons.refresh_rounded),
+              ),
+            ],
+            primaryActions: [
+              FilledButton.icon(
+                onPressed: _loading ? null : _addLocation,
+                icon: const Icon(Icons.add),
+                label: const Text('Add location'),
+              ),
+            ],
+          ),
+          const Divider(height: 1),
+          Expanded(child: body),
+        ],
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Vehicle Locations'),
+        title: const Text('Location Management'),
         actions: [
           IconButton(
             tooltip: 'Refresh',
@@ -208,57 +306,11 @@ on conflict (location_name) do nothing;
           ),
         ],
       ),
+      body: body,
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _loading ? null : _addLocation,
         icon: const Icon(Icons.add),
-        label: const Text('Add'),
-      ),
-      body: SafeArea(
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 600),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-              child: _loading
-                  ? const Center(child: CircularProgressIndicator())
-                  : (_error != null)
-                      ? ListView(
-                          children: [
-                            Text(_error!, style: TextStyle(color: Colors.red.shade700)),
-                            const SizedBox(height: 12),
-                            if (hasTableMissing) _tableMissingHint(),
-                          ],
-                        )
-                      : ListView.separated(
-                          itemCount: _rows.length,
-                          separatorBuilder: (_, __) => const Divider(height: 1),
-                          itemBuilder: (_, i) {
-                            final r = _rows[i];
-                            final name = (r['location_name'] ?? '').toString();
-                            final active = (r['is_active'] as bool?) ?? true;
-                            return ListTile(
-                              title: Text(name),
-                              subtitle: Text(active ? 'Active' : 'Inactive'),
-                              trailing: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Switch(
-                                    value: active,
-                                    onChanged: (v) => _toggleActive(r, v),
-                                  ),
-                                  IconButton(
-                                    tooltip: 'Delete',
-                                    onPressed: () => _delete(r),
-                                    icon: const Icon(Icons.delete_outline),
-                                  ),
-                                ],
-                              ),
-                            );
-                          },
-                        ),
-            ),
-          ),
-        ),
+        label: const Text('Add location'),
       ),
     );
   }

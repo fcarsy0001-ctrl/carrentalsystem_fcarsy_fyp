@@ -12,6 +12,10 @@ import 'staff_admin_page.dart';
 import 'user_management_page.dart';
 import 'vehicle_admin_page.dart';
 import '../support/admin_support_page.dart';
+import 'vehicle_location_admin_page.dart';
+import 'vendor_cost_admin_page.dart';
+import 'service_job_orders_page.dart';
+import 'maintenance_schedule_admin_page.dart';
 
 class AdminShell extends StatefulWidget {
   const AdminShell({super.key, required this.isSuperAdmin});
@@ -42,11 +46,15 @@ class _AdminShellState extends State<AdminShell> {
   Widget build(BuildContext context) {
     final items = <_NavItem>[
       const _NavItem('Dashboard', Icons.dashboard_outlined, AdminDashboardPage()),
+      const _NavItem('Onboarding', Icons.fact_check_outlined, VehicleAdminPage(embedded: true, title: 'Vehicle Onboarding')),
+      const _NavItem('Locations', Icons.place_outlined, VehicleLocationAdminPage(embedded: true)),
+      const _NavItem('Service Jobs', Icons.build_circle_outlined, ServiceJobOrdersPage(embedded: true)),
+      const _NavItem('Maintenance', Icons.calendar_month_outlined, MaintenanceScheduleAdminPage(embedded: true)),
+      const _NavItem('Vendors & Cost', Icons.inventory_2_outlined, VendorCostAdminPage(embedded: true)),
       const _NavItem('Orders', Icons.receipt_long_outlined, OrderManagementPage()),
       const _NavItem('Reports', Icons.bar_chart_outlined, ReportsAdminPage()),
       const _NavItem('Licences', Icons.badge_outlined, DriverLicenseReviewPage()),
       const _NavItem('Leasers', Icons.handshake_outlined, LeaserAdminModulePage()),
-      const _NavItem('Vehicles', Icons.directions_car_outlined, VehicleAdminPage(embedded: true)),
       const _NavItem('Users', Icons.people_alt_outlined, UserManagementPage()),
       const _NavItem('Promotions', Icons.local_offer_outlined, PromotionAdminPage()),
       const _NavItem('Support', Icons.support_agent_outlined, AdminSupportPage(embedded: true)),
