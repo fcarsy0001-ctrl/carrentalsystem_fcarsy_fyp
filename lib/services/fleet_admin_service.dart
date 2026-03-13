@@ -115,9 +115,12 @@ create table if not exists public.service_cost (
   }
 
   String newId(String prefix) {
-    final now = DateTime.now();
-    final stamp = now.microsecondsSinceEpoch;
-    return '$prefix-$stamp';
+    final cleaned = prefix.trim().toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
+    final safePrefix = cleaned.isEmpty ? 'ID' : cleaned;
+    final suffixLength = safePrefix.length >= 10 ? 1 : 10 - safePrefix.length;
+    final micros = DateTime.now().microsecondsSinceEpoch.toString();
+    final suffix = micros.substring(micros.length - suffixLength);
+    return '$safePrefix$suffix';
   }
 
   List<Map<String, dynamic>> _rows(dynamic response) {

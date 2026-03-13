@@ -2,20 +2,20 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../main.dart';
+import '../support/admin_support_page.dart';
 import 'admin_dashboard_page.dart';
 import 'driver_license_review_page.dart';
 import 'leaser_admin_module_page.dart';
+import 'maintenance_schedule_admin_page.dart';
 import 'order_management_page.dart';
 import 'promotion_admin_page.dart';
 import 'reports_admin_page.dart';
+import 'service_job_orders_page.dart';
 import 'staff_admin_page.dart';
 import 'user_management_page.dart';
-import 'vehicle_admin_page.dart';
-import '../support/admin_support_page.dart';
-import 'vehicle_location_admin_page.dart';
+import 'vehicle_location_dashboard_page.dart';
+import 'vehicle_onboarding_page.dart';
 import 'vendor_cost_admin_page.dart';
-import 'service_job_orders_page.dart';
-import 'maintenance_schedule_admin_page.dart';
 
 class AdminShell extends StatefulWidget {
   const AdminShell({super.key, required this.isSuperAdmin});
@@ -38,7 +38,7 @@ class _AdminShellState extends State<AdminShell> {
     if (!mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => const AuthWrapper()),
-      (route) => false,
+          (route) => false,
     );
   }
 
@@ -46,8 +46,8 @@ class _AdminShellState extends State<AdminShell> {
   Widget build(BuildContext context) {
     final items = <_NavItem>[
       const _NavItem('Dashboard', Icons.dashboard_outlined, AdminDashboardPage()),
-      const _NavItem('Onboarding', Icons.fact_check_outlined, VehicleAdminPage(embedded: true, title: 'Vehicle Onboarding')),
-      const _NavItem('Locations', Icons.place_outlined, VehicleLocationAdminPage(embedded: true)),
+      const _NavItem('Onboarding', Icons.fact_check_outlined, VehicleOnboardingPage(embedded: true, title: 'Vehicle Onboarding')),
+      const _NavItem('Locations', Icons.place_outlined, VehicleLocationDashboardPage(embedded: true)),
       const _NavItem('Service Jobs', Icons.build_circle_outlined, ServiceJobOrdersPage(embedded: true)),
       const _NavItem('Maintenance', Icons.calendar_month_outlined, MaintenanceScheduleAdminPage(embedded: true)),
       const _NavItem('Vendors & Cost', Icons.inventory_2_outlined, VendorCostAdminPage(embedded: true)),
@@ -64,7 +64,6 @@ class _AdminShellState extends State<AdminShell> {
     if (_index >= items.length) _index = 0;
 
     final isWide = MediaQuery.sizeOf(context).width >= 900;
-
     final body = items[_index].page;
 
     return Scaffold(
@@ -82,54 +81,54 @@ class _AdminShellState extends State<AdminShell> {
       drawer: isWide
           ? null
           : Drawer(
-              child: SafeArea(
-                child: ListView(
-                  padding: EdgeInsets.zero,
-                  children: [
-                    const SizedBox(height: 8),
-                    for (var i = 0; i < items.length; i++)
-                      ListTile(
-                        leading: Icon(items[i].icon),
-                        title: Text(items[i].label),
-                        selected: i == _index,
-                        onTap: () {
-                          setState(() => _index = i);
-                          Navigator.pop(context);
-                        },
-                      ),
-                    const Divider(),
-                    ListTile(
-                      leading: const Icon(Icons.logout_rounded),
-                      title: const Text('Logout'),
-                      onTap: () async {
-                        Navigator.pop(context);
-                        await _logout();
-                      },
-                    ),
-                  ],
+        child: SafeArea(
+          child: ListView(
+            padding: EdgeInsets.zero,
+            children: [
+              const SizedBox(height: 8),
+              for (var i = 0; i < items.length; i++)
+                ListTile(
+                  leading: Icon(items[i].icon),
+                  title: Text(items[i].label),
+                  selected: i == _index,
+                  onTap: () {
+                    setState(() => _index = i);
+                    Navigator.pop(context);
+                  },
                 ),
+              const Divider(),
+              ListTile(
+                leading: const Icon(Icons.logout_rounded),
+                title: const Text('Logout'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  await _logout();
+                },
               ),
-            ),
+            ],
+          ),
+        ),
+      ),
       body: isWide
           ? Row(
-              children: [
-                NavigationRail(
-                  selectedIndex: _index,
-                  labelType: NavigationRailLabelType.all,
-                  onDestinationSelected: (i) => setState(() => _index = i),
-                  destinations: [
-                    for (final it in items)
-                      NavigationRailDestination(
-                        icon: Icon(it.icon),
-                        selectedIcon: Icon(it.icon),
-                        label: Text(it.label),
-                      ),
-                  ],
+        children: [
+          NavigationRail(
+            selectedIndex: _index,
+            labelType: NavigationRailLabelType.all,
+            onDestinationSelected: (value) => setState(() => _index = value),
+            destinations: [
+              for (final item in items)
+                NavigationRailDestination(
+                  icon: Icon(item.icon),
+                  selectedIcon: Icon(item.icon),
+                  label: Text(item.label),
                 ),
-                const VerticalDivider(width: 1),
-                Expanded(child: body),
-              ],
-            )
+            ],
+          ),
+          const VerticalDivider(width: 1),
+          Expanded(child: body),
+        ],
+      )
           : body,
     );
   }
@@ -137,6 +136,7 @@ class _AdminShellState extends State<AdminShell> {
 
 class _NavItem {
   const _NavItem(this.label, this.icon, this.page);
+
   final String label;
   final IconData icon;
   final Widget page;

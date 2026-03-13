@@ -8,7 +8,7 @@ import 'order_management_page.dart';
 import 'reports_admin_page.dart';
 import 'user_management_page.dart';
 import 'leaser_admin_module_page.dart';
-import 'vehicle_admin_page.dart';
+import 'vehicle_onboarding_page.dart';
 import '../support/admin_support_page.dart';
 import '../core/widgets/simple_charts.dart';
 
@@ -206,7 +206,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                       icon: Icons.directions_car_outlined,
                       label: 'Vehicles',
                       onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const VehicleAdminPage()),
+                        MaterialPageRoute(builder: (_) => const VehicleOnboardingPage()),
                       ),
                     ),
                     _QuickChip(
@@ -359,3 +359,4 @@ class _QuickChip extends StatelessWidget {
     );
   }
 }
+

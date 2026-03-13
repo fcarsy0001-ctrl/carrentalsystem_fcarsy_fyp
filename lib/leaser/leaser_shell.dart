@@ -1,10 +1,11 @@
-
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-import '../admin/vehicle_admin_page.dart';
+import '../admin/vehicle_location_dashboard_page.dart';
+import '../admin/vehicle_onboarding_page.dart';
 import '../main.dart';
 import 'leaser_dashboard_page.dart';
+import 'vehicle_onboarding_status_page.dart';
 
 class LeaserShell extends StatelessWidget {
   const LeaserShell({super.key, required this.leaserId});
@@ -20,7 +21,7 @@ class LeaserShell extends StatelessWidget {
     if (!context.mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => const AuthWrapper()),
-      (route) => false,
+          (route) => false,
     );
   }
 
@@ -29,11 +30,27 @@ class LeaserShell extends StatelessWidget {
     final tabs = <Tab>[
       const Tab(icon: Icon(Icons.dashboard_outlined), text: 'Dashboard'),
       const Tab(icon: Icon(Icons.directions_car_outlined), text: 'Vehicles'),
+      const Tab(icon: Icon(Icons.place_outlined), text: 'Locations'),
+      const Tab(icon: Icon(Icons.track_changes_outlined), text: 'Status'),
     ];
 
     final views = <Widget>[
       LeaserDashboardPage(leaserId: leaserId),
-      VehicleAdminPage(leaserId: leaserId, title: 'My Vehicles'),
+      VehicleOnboardingPage(
+        leaserId: leaserId,
+        title: 'My Vehicles',
+        embedded: true,
+      ),
+      VehicleLocationDashboardPage(
+        leaserId: leaserId,
+        title: 'Vehicle Locations',
+        embedded: true,
+        allowManageLocations: false,
+      ),
+      VehicleOnboardingStatusPage(
+        leaserId: leaserId,
+        embedded: true,
+      ),
     ];
 
     return DefaultTabController(

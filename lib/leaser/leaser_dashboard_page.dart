@@ -4,7 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/analytics_service.dart';
 import '../core/widgets/simple_charts.dart';
-import '../admin/vehicle_admin_page.dart';
+import '../admin/vehicle_onboarding_page.dart';
 import 'reports_leaser_page.dart';
 
 class LeaserDashboardPage extends StatefulWidget {
@@ -116,7 +116,7 @@ class _LeaserDashboardPageState extends State<LeaserDashboardPage> {
                 subtitle: 'Manage your vehicles',
                 child: ElevatedButton.icon(
                   onPressed: () => Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => VehicleAdminPage(leaserId: widget.leaserId, title: 'My Vehicles')),
+                    MaterialPageRoute(builder: (_) => VehicleOnboardingPage(leaserId: widget.leaserId, title: 'My Vehicles')),
                   ),
                   icon: const Icon(Icons.directions_car_outlined),
                   label: const Text('Open Vehicle Module'),
@@ -234,3 +234,4 @@ class _Section extends StatelessWidget {
     );
   }
 }
+
