@@ -7,17 +7,25 @@ import 'vehicle_eligibility_result_page.dart';
 import 'vehicle_registration_page.dart';
 import 'widgets/admin_ui.dart';
 
+enum AdminVehicleView {
+  all,
+  approvedOnly,
+  onboardingQueue,
+}
+
 class VehicleOnboardingPage extends StatefulWidget {
   const VehicleOnboardingPage({
     super.key,
     this.leaserId,
     this.title,
     this.embedded = false,
+    this.adminView = AdminVehicleView.all,
   });
 
   final String? leaserId;
   final String? title;
   final bool embedded;
+  final AdminVehicleView adminView;
 
   @override
   State<VehicleOnboardingPage> createState() => _VehicleOnboardingPageState();
@@ -31,6 +39,10 @@ class _VehicleOnboardingPageState extends State<VehicleOnboardingPage> {
   String _filter = 'All';
 
   bool get _isAdminMode => (widget.leaserId ?? '').trim().isEmpty;
+  bool get _isApprovedListView =>
+      _isAdminMode && widget.adminView == AdminVehicleView.approvedOnly;
+  bool get _isOnboardingQueueView =>
+      _isAdminMode && widget.adminView == AdminVehicleView.onboardingQueue;
 
   @override
   void initState() {
@@ -60,6 +72,75 @@ class _VehicleOnboardingPageState extends State<VehicleOnboardingPage> {
       _future = _load();
     });
     await _future;
+  }
+
+  String get _pageTitle {
+    if (widget.title != null) return widget.title!;
+    if (!_isAdminMode) return 'My Vehicles';
+    return switch (widget.adminView) {
+      AdminVehicleView.approvedOnly => 'Vehicle List',
+      AdminVehicleView.onboardingQueue => 'Vehicle Onboarding',
+      AdminVehicleView.all => 'Vehicle Onboarding',
+    };
+  }
+
+  String get _toolbarTitle {
+    if (!_isAdminMode) return 'My Vehicle List';
+    return switch (widget.adminView) {
+      AdminVehicleView.approvedOnly => 'Vehicle List',
+      AdminVehicleView.onboardingQueue => 'Vehicle Onboarding',
+      AdminVehicleView.all => 'Vehicle List',
+    };
+  }
+
+  String get _subtitle {
+    if (!_isAdminMode) {
+      return 'Track your submitted vehicles and onboarding progress';
+    }
+    return switch (widget.adminView) {
+      AdminVehicleView.approvedOnly =>
+      'Approved vehicles that are ready for fleet operations',
+      AdminVehicleView.onboardingQueue =>
+      'Review pending and rejected vehicles, update condition, and manage eligibility',
+      AdminVehicleView.all =>
+      'Fleet management for onboarding and eligibility control',
+    };
+  }
+
+  bool get _showAddVehicleAction => !_isApprovedListView;
+
+  List<String> get _filterOptions {
+    if (_isApprovedListView) {
+      return const [
+        'All',
+        'Approved',
+        'Eligible',
+        'Ready',
+        'Active',
+        'Maintenance',
+      ];
+    }
+    if (_isOnboardingQueueView) {
+      return const [
+        'All',
+        'Pending Review',
+        'Rejected',
+        'Eligible',
+        'Ready',
+        'Active',
+        'Maintenance',
+      ];
+    }
+    return const [
+      'All',
+      'Pending Review',
+      'Approved',
+      'Rejected',
+      'Eligible',
+      'Ready',
+      'Active',
+      'Maintenance',
+    ];
   }
 
   Future<void> _openRegistration({Map<String, dynamic>? initial}) async {
@@ -116,7 +197,11 @@ class _VehicleOnboardingPageState extends State<VehicleOnboardingPage> {
 
   List<Map<String, dynamic>> _applyFilters(List<Map<String, dynamic>> rows) {
     final query = _searchController.text.trim().toLowerCase();
+    final activeFilter = _filterOptions.contains(_filter) ? _filter : 'All';
     return rows.where((row) {
+      if (!_matchesAdminView(row)) return false;
+
+      final review = _reviewStatus(row);
       final haystack = [
         _s(row['vehicle_plate_no']),
         _s(row['vehicle_brand']),
@@ -126,15 +211,15 @@ class _VehicleOnboardingPageState extends State<VehicleOnboardingPage> {
         _s(row['condition_status']),
         _s(row['eligibility_status']),
         _s(row['readiness_status']),
-        _s(row['review_status']),
+        review,
         _activityStatus(row),
       ].join(' ').toLowerCase();
 
       final matchesSearch = query.isEmpty || haystack.contains(query);
-      final matchesFilter = switch (_filter) {
-        'Pending Review' => _s(row['review_status']) == 'Pending Review',
-        'Approved' => _s(row['review_status']) == 'Approved',
-        'Rejected' => _s(row['review_status']) == 'Rejected',
+      final matchesFilter = switch (activeFilter) {
+        'Pending Review' => review == 'Pending Review',
+        'Approved' => review == 'Approved',
+        'Rejected' => review == 'Rejected',
         'Eligible' => _s(row['eligibility_status']) == 'Eligible',
         'Ready' => _s(row['readiness_status']) == 'Ready',
         'Active' => _activityStatus(row) == 'Active',
@@ -148,11 +233,29 @@ class _VehicleOnboardingPageState extends State<VehicleOnboardingPage> {
 
   String _s(dynamic value) => value == null ? '' : value.toString().trim();
 
+  String _reviewStatus(Map<String, dynamic> row) {
+    final review = _s(row['review_status']);
+    return review.isEmpty ? 'Pending Review' : review;
+  }
+
+  bool _matchesAdminView(Map<String, dynamic> row) {
+    if (!_isAdminMode) return true;
+    final review = _reviewStatus(row);
+    return switch (widget.adminView) {
+      AdminVehicleView.approvedOnly => review == 'Approved',
+      AdminVehicleView.onboardingQueue =>
+      review == 'Pending Review' || review == 'Rejected',
+      AdminVehicleView.all => true,
+    };
+  }
+
   String _activityStatus(Map<String, dynamic> row) {
     final raw = _s(row['vehicle_status']);
     final status = raw.toLowerCase();
     if (status == 'available' || status == 'active') return 'Active';
-    if (status.contains('maint') || status == 'unavail' || status == 'unavailable') return 'Maintenance';
+    if (status.contains('maint') || status == 'unavail' || status == 'unavailable') {
+      return 'Maintenance';
+    }
     return raw.isEmpty ? 'Pending' : raw;
   }
 
@@ -170,7 +273,7 @@ class _VehicleOnboardingPageState extends State<VehicleOnboardingPage> {
             _EmptyVehiclesCard(
               isAdminMode: _isAdminMode,
               onAddPressed: () => _openRegistration(),
-              showAddButton: !widget.embedded,
+              showAddButton: !widget.embedded && _showAddVehicleAction,
             )
           else
             ...filtered.map(
@@ -193,43 +296,45 @@ class _VehicleOnboardingPageState extends State<VehicleOnboardingPage> {
 
   Widget _buildToolbar(int count) {
     final cs = Theme.of(context).colorScheme;
+    final selectedFilter = _filterOptions.contains(_filter) ? _filter : 'All';
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    widget.title ?? (_isAdminMode ? 'Vehicle List' : 'My Vehicle List'),
-                    style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w900),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    _isAdminMode
-                        ? 'Fleet management for onboarding and eligibility control'
-                        : 'Track your submitted vehicles and onboarding progress',
-                    style: TextStyle(
-                      color: cs.onSurfaceVariant,
-                      fontWeight: FontWeight.w500,
+        if (!widget.embedded) ...[
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _toolbarTitle,
+                      style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w900),
                     ),
-                  ),
-                ],
+                    const SizedBox(height: 4),
+                    Text(
+                      _subtitle,
+                      style: TextStyle(
+                        color: cs.onSurfaceVariant,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
-            if (!widget.embedded && count > 0) ...[
-              const SizedBox(width: 12),
-              FilledButton.icon(
-                onPressed: () => _openRegistration(),
-                icon: const Icon(Icons.add_circle_outline),
-                label: const Text('Add Vehicle'),
-              ),
+              if (count > 0 && _showAddVehicleAction) ...[
+                const SizedBox(width: 12),
+                FilledButton.icon(
+                  onPressed: () => _openRegistration(),
+                  icon: const Icon(Icons.add_circle_outline),
+                  label: const Text('Add Vehicle'),
+                ),
+              ],
             ],
-          ],
-        ),
-        const SizedBox(height: 14),
+          ),
+          const SizedBox(height: 14),
+        ],
         Row(
           children: [
             Expanded(
@@ -240,18 +345,22 @@ class _VehicleOnboardingPageState extends State<VehicleOnboardingPage> {
                   prefixIcon: const Icon(Icons.search_rounded),
                   suffixIcon: PopupMenuButton<String>(
                     tooltip: 'Filter list',
-                    initialValue: _filter,
+                    initialValue: selectedFilter,
                     onSelected: (value) => setState(() => _filter = value),
-                    itemBuilder: (_) => const [
-                      PopupMenuItem(value: 'All', child: Text('All vehicles')),
-                      PopupMenuItem(value: 'Pending Review', child: Text('Pending review')),
-                      PopupMenuItem(value: 'Approved', child: Text('Approved')),
-                      PopupMenuItem(value: 'Rejected', child: Text('Rejected')),
-                      PopupMenuItem(value: 'Eligible', child: Text('Eligible')),
-                      PopupMenuItem(value: 'Ready', child: Text('Ready')),
-                      PopupMenuItem(value: 'Active', child: Text('Active')),
-                      PopupMenuItem(value: 'Maintenance', child: Text('Maintenance')),
-                    ],
+                    itemBuilder: (_) => _filterOptions
+                        .map(
+                          (value) => PopupMenuItem<String>(
+                        value: value,
+                        child: Text(
+                          switch (value) {
+                            'All' => 'All vehicles',
+                            'Pending Review' => 'Pending review',
+                            _ => value,
+                          },
+                        ),
+                      ),
+                    )
+                        .toList(),
                     icon: const Icon(Icons.tune_rounded),
                   ),
                 ),
@@ -270,7 +379,7 @@ class _VehicleOnboardingPageState extends State<VehicleOnboardingPage> {
               ),
             ),
             const SizedBox(width: 10),
-            if (_filter != 'All')
+            if (selectedFilter != 'All')
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 decoration: BoxDecoration(
@@ -278,7 +387,7 @@ class _VehicleOnboardingPageState extends State<VehicleOnboardingPage> {
                   borderRadius: BorderRadius.circular(999),
                 ),
                 child: Text(
-                  _filter,
+                  selectedFilter,
                   style: TextStyle(
                     color: cs.onSecondaryContainer,
                     fontWeight: FontWeight.w700,
@@ -317,9 +426,9 @@ class _VehicleOnboardingPageState extends State<VehicleOnboardingPage> {
         children: [
           AdminModuleHeader(
             icon: Icons.fact_check_outlined,
-            title: widget.title ?? (_isAdminMode ? 'Vehicle Onboarding' : 'My Vehicles'),
+            title: _pageTitle,
             subtitle: _isAdminMode
-                ? 'Review new vehicles, update condition, and manage eligibility.'
+                ? '$_subtitle.'
                 : 'Register new vehicles and monitor their onboarding status.',
             actions: [
               IconButton(
@@ -328,13 +437,15 @@ class _VehicleOnboardingPageState extends State<VehicleOnboardingPage> {
                 icon: const Icon(Icons.refresh_rounded),
               ),
             ],
-            primaryActions: [
+            primaryActions: _showAddVehicleAction
+                ? [
               FilledButton.icon(
                 onPressed: () => _openRegistration(),
                 icon: const Icon(Icons.add),
                 label: const Text('Add vehicle'),
               ),
-            ],
+            ]
+                : const [],
           ),
           const Divider(height: 1),
           Expanded(child: content),
@@ -344,7 +455,7 @@ class _VehicleOnboardingPageState extends State<VehicleOnboardingPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.title ?? (_isAdminMode ? 'Vehicle Onboarding' : 'My Vehicles')),
+        title: Text(_pageTitle),
         actions: [
           IconButton(
             tooltip: 'Refresh',
@@ -357,7 +468,6 @@ class _VehicleOnboardingPageState extends State<VehicleOnboardingPage> {
     );
   }
 }
-
 class _VehicleSummaryCard extends StatelessWidget {
   const _VehicleSummaryCard({
     required this.record,
@@ -665,4 +775,6 @@ class _EmptyVehiclesCard extends StatelessWidget {
     );
   }
 }
+
+
 

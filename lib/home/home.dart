@@ -5,10 +5,10 @@ import '../config/supabase_config.dart';
 import '../profile/profile.dart';
 import '../services/driver_license_service.dart';
 import '../services/promotion_service.dart';
-import '../services/rentable_vehicle_service.dart';
 import 'product_page.dart';
 import 'vehicle_browse_page.dart';
 import 'nearby_map_page.dart';
+
 /// Home screen (car rental) inspired by common car-sharing layouts
 /// (search + featured + car cards). Data is mocked for now.
 class HomePage extends StatefulWidget {
@@ -50,21 +50,18 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<List<Vehicle>> _loadVehicles() async {
-    final rentableService = RentableVehicleService(_supa);
-    final activeLocations = await rentableService.fetchActiveLocationNames();
-
+    // NOTE: if you enable RLS on vehicle, make sure you have a SELECT policy.
+    // Common policy: allow public SELECT where vehicle_status = 'Available'.
     final rows = await _supa
         .from('vehicle')
         .select()
         .eq('vehicle_status', 'Available')
         .order('vehicle_id', ascending: false);
 
-    final filteredRows = (rows as List)
-        .map((e) => Map<String, dynamic>.from(e as Map))
-        .where((row) => rentableService.isInActiveBranch(row, activeLocations))
+    final list = (rows as List)
+        .map((e) => Vehicle.fromMap(Map<String, dynamic>.from(e as Map)))
         .toList();
-
-    return filteredRows.map(Vehicle.fromMap).toList();
+    return list;
   }
 
   Future<void> _refreshVehicles() async {
@@ -124,12 +121,12 @@ class _HomePageState extends State<HomePage> {
     if (snap.state == DriverLicenseState.pending) {
       title = 'Under review';
       body =
-      'Your driver licence submission is pending admin review. You can start renting once it is approved.';
+          'Your driver licence submission is pending admin review. You can start renting once it is approved.';
       action = 'View status';
     } else if (snap.state == DriverLicenseState.rejected) {
       title = 'Verification rejected';
       body =
-      'Your driver licence submission was rejected. Please resubmit with clear details and a readable photo.';
+          'Your driver licence submission was rejected. Please resubmit with clear details and a readable photo.';
       if ((snap.rejectRemark ?? '').trim().isNotEmpty) {
         body += '\n\nRemark: ${snap.rejectRemark}';
       }
@@ -297,26 +294,26 @@ class _HomePageState extends State<HomePage> {
                             onClaim: alreadyClaimed || promoId.isEmpty
                                 ? null
                                 : () async {
-                              try {
-                                final svc = PromotionService(_supa);
-                                final result = await svc.claimVoucherWithStatus(promoId: promoId);
-                                if (!mounted) return;
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text(
-                                      result.alreadyClaimed
-                                          ? 'Already claimed: $promo'
-                                          : 'Voucher claimed: $promo',
-                                    ),
-                                  ),
-                                );
-                                await _refreshClaimedPromos();
-                              } catch (e) {
-                                if (!mounted) return;
-                                ScaffoldMessenger.of(context)
-                                    .showSnackBar(SnackBar(content: Text('Claim failed: $e')));
-                              }
-                            },
+                                    try {
+                                      final svc = PromotionService(_supa);
+                                      final result = await svc.claimVoucherWithStatus(promoId: promoId);
+                                      if (!mounted) return;
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                            result.alreadyClaimed
+                                                ? 'Already claimed: $promo'
+                                                : 'Voucher claimed: $promo',
+                                          ),
+                                        ),
+                                      );
+                                      await _refreshClaimedPromos();
+                                    } catch (e) {
+                                      if (!mounted) return;
+                                      ScaffoldMessenger.of(context)
+                                          .showSnackBar(SnackBar(content: Text('Claim failed: $e')));
+                                    }
+                                  },
                           );
                         },
                       );
@@ -332,7 +329,7 @@ class _HomePageState extends State<HomePage> {
             // Featured
             _FeaturedBanner(
               title: 'Drive from RM6/hour',
-              subtitle: 'Hourly ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢ Daily ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢ Weekly ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â flexible plans',
+              subtitle: 'Hourly • Daily • Weekly — flexible plans',
               buttonText: 'Book now',
               onPressed: () async {
                 final ok = await _ensureLicenseBeforeRental();
@@ -452,14 +449,14 @@ class _HomePageState extends State<HomePage> {
                     ),
                     const SizedBox(height: 12),
                     ...vehicles.map(
-                          (v) => Padding(
+                      (v) => Padding(
                         padding: const EdgeInsets.only(bottom: 12),
                         child: _VehicleListTile(
                           vehicle: v,
                           photoUrl: _vehiclePhotoPublicUrl(v.photoPath),
-                          onTap: () => _openProduct(v),
+                        onTap: () => _openProduct(v),
                           trailing: FilledButton.tonal(
-                            onPressed: () => _openProduct(v),
+                          onPressed: () => _openProduct(v),
                             child: Text('RM${v.dailyRate.toStringAsFixed(0)}/day'),
                           ),
                         ),
@@ -567,69 +564,69 @@ class _VehicleCard extends StatelessWidget {
         child: InkWell(
           onTap: onRent,
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              SizedBox(
-                height: 140,
-                width: double.infinity,
-                child: photoUrl == null
-                    ? Container(
-                  color: cs.surfaceContainerHighest,
-                  alignment: Alignment.center,
-                  child: const Icon(Icons.directions_car_rounded, size: 52),
-                )
-                    : Image.network(
-                  photoUrl!,
-                  fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => Container(
-                    color: cs.surfaceContainerHighest,
-                    alignment: Alignment.center,
-                    child: const Icon(Icons.image_not_supported_outlined),
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              height: 140,
+              width: double.infinity,
+              child: photoUrl == null
+                  ? Container(
+                      color: cs.surfaceContainerHighest,
+                      alignment: Alignment.center,
+                      child: const Icon(Icons.directions_car_rounded, size: 52),
+                    )
+                  : Image.network(
+                      photoUrl!,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => Container(
+                        color: cs.surfaceContainerHighest,
+                        alignment: Alignment.center,
+                        child: const Icon(Icons.image_not_supported_outlined),
+                      ),
+                    ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    vehicle.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.w900),
                   ),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.all(12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      vehicle.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontWeight: FontWeight.w900),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      '${vehicle.type} ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢ ${vehicle.seats} seats',
-                      style: TextStyle(color: Colors.grey.shade700),
-                    ),
-                    const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            'RM${vehicle.dailyRate.toStringAsFixed(0)}/day',
-                            style: const TextStyle(fontWeight: FontWeight.w800),
-                          ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '${vehicle.type} • ${vehicle.seats} seats',
+                    style: TextStyle(color: Colors.grey.shade700),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'RM${vehicle.dailyRate.toStringAsFixed(0)}/day',
+                          style: const TextStyle(fontWeight: FontWeight.w800),
                         ),
-                        FilledButton.tonal(
-                          onPressed: onRent,
-                          child: const Text('View'),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      vehicle.location.isEmpty ? '-' : vehicle.location,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
-                    ),
-                  ],
-                ),
+                      ),
+                      FilledButton.tonal(
+                        onPressed: onRent,
+                        child: const Text('View'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    vehicle.location.isEmpty ? '-' : vehicle.location,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                  ),
+                ],
               ),
-            ],
+            ),
+          ],
           ),
         ),
       ),
@@ -744,26 +741,26 @@ class _VehicleListTile extends StatelessWidget {
             height: 54,
             child: photoUrl == null
                 ? Container(
-              color: cs.surfaceContainerHighest,
-              alignment: Alignment.center,
-              child: const Icon(Icons.directions_car_rounded),
-            )
+                    color: cs.surfaceContainerHighest,
+                    alignment: Alignment.center,
+                    child: const Icon(Icons.directions_car_rounded),
+                  )
                 : Image.network(
-              photoUrl!,
-              fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) => Container(
-                color: cs.surfaceContainerHighest,
-                alignment: Alignment.center,
-                child: const Icon(Icons.image_not_supported_outlined),
-              ),
-            ),
+                    photoUrl!,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => Container(
+                      color: cs.surfaceContainerHighest,
+                      alignment: Alignment.center,
+                      child: const Icon(Icons.image_not_supported_outlined),
+                    ),
+                  ),
           ),
         ),
         title: Text(vehicle.title, style: const TextStyle(fontWeight: FontWeight.w800)),
         subtitle: Text(
-          '${vehicle.plate.isEmpty ? '-' : vehicle.plate} ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢ ${vehicle.location.isEmpty ? '-' : vehicle.location}',
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
+          '${vehicle.plate.isEmpty ? '-' : vehicle.plate} • ${vehicle.location.isEmpty ? '-' : vehicle.location}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
         ),
         trailing: trailing,
       ),
@@ -793,13 +790,13 @@ class _LicenseStatusBanner extends StatelessWidget {
     if (snapshot.state == DriverLicenseState.pending) {
       title = 'Driver licence under review';
       message =
-      'Your submission is pending admin review. You can rent after approval.';
+          'Your submission is pending admin review. You can rent after approval.';
       icon = Icons.hourglass_top_rounded;
       tint = cs.tertiary;
     } else if (snapshot.state == DriverLicenseState.rejected) {
       title = 'Driver licence rejected';
       message =
-      'Please resubmit with correct details and a clear photo for verification.';
+          'Please resubmit with correct details and a clear photo for verification.';
       if ((snapshot.rejectRemark ?? '').trim().isNotEmpty) {
         message += '\nRemark: ${snapshot.rejectRemark}';
       }
@@ -864,7 +861,7 @@ class _SearchBar extends StatelessWidget {
           Expanded(
             child: TextField(
               decoration: const InputDecoration(
-                hintText: 'Search by model, location, typeÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦',
+                hintText: 'Search by model, location, type…',
                 isDense: true,
                 border: InputBorder.none,
               ),
@@ -1000,7 +997,7 @@ class _QuickAction extends StatelessWidget {
                   const SizedBox(height: 2),
                   Text(subtitle,
                       style:
-                      TextStyle(color: Colors.grey.shade700, fontSize: 12)),
+                          TextStyle(color: Colors.grey.shade700, fontSize: 12)),
                 ],
               ),
             ),
@@ -1063,7 +1060,7 @@ class _CarCard extends StatelessWidget {
               ),
               Container(
                 padding:
-                const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(999),
                   color: cs.primaryContainer,
@@ -1194,7 +1191,7 @@ class _CarListTile extends StatelessWidget {
                       style: const TextStyle(fontWeight: FontWeight.w800)),
                   const SizedBox(height: 3),
                   Text(
-                    '${model.type} ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢ ${model.seats} seats ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢ ${model.transmission}',
+                    '${model.type} • ${model.seats} seats • ${model.transmission}',
                     style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
                   ),
                 ],

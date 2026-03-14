@@ -8,6 +8,7 @@ import 'order_management_page.dart';
 import 'reports_admin_page.dart';
 import 'user_management_page.dart';
 import 'leaser_admin_module_page.dart';
+import 'vehicle_location_dashboard_page.dart';
 import 'vehicle_onboarding_page.dart';
 import '../support/admin_support_page.dart';
 import '../core/widgets/simple_charts.dart';
@@ -140,7 +141,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
 
               _Section(
                 title: 'Order Management',
-                subtitle: 'View orders only • Deactivate if user issue',
+                subtitle: 'View orders only â€¢ Deactivate if user issue',
                 child: ElevatedButton.icon(
                   onPressed: () => Navigator.of(context).push(
                     MaterialPageRoute(builder: (_) => const OrderManagementPage()),
@@ -182,7 +183,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
 
               _Section(
                 title: 'Booking rate (last 14 days)',
-                subtitle: '${_fmtDate(d.start)} → ${_fmtDate(d.end)}',
+                subtitle: '${_fmtDate(d.start)} â†’ ${_fmtDate(d.end)}',
                 child: SimpleBarChart(values: bookingCounts),
               ),
 
@@ -204,9 +205,26 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                   children: [
                     _QuickChip(
                       icon: Icons.directions_car_outlined,
-                      label: 'Vehicles',
+                      label: 'Vehicle List',
                       onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const VehicleOnboardingPage()),
+                        MaterialPageRoute(
+                          builder: (_) => const VehicleOnboardingPage(
+                            title: 'Vehicle List',
+                            adminView: AdminVehicleView.approvedOnly,
+                          ),
+                        ),
+                      ),
+                    ),
+                    _QuickChip(
+                      icon: Icons.fact_check_outlined,
+                      label: 'Onboarding',
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => const VehicleOnboardingPage(
+                            title: 'Vehicle Onboarding',
+                            adminView: AdminVehicleView.onboardingQueue,
+                          ),
+                        ),
                       ),
                     ),
                     _QuickChip(
@@ -221,6 +239,13 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                       label: 'Leasers',
                       onTap: () => Navigator.of(context).push(
                         MaterialPageRoute(builder: (_) => const LeaserAdminModulePage()),
+                      ),
+                    ),
+                    _QuickChip(
+                      icon: Icons.place_outlined,
+                      label: 'Locations',
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const VehicleLocationDashboardPage()),
                       ),
                     ),
                     _QuickChip(
@@ -359,4 +384,8 @@ class _QuickChip extends StatelessWidget {
     );
   }
 }
+
+
+
+
 

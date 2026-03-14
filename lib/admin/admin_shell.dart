@@ -46,7 +46,24 @@ class _AdminShellState extends State<AdminShell> {
   Widget build(BuildContext context) {
     final items = <_NavItem>[
       const _NavItem('Dashboard', Icons.dashboard_outlined, AdminDashboardPage()),
-      const _NavItem('Onboarding', Icons.fact_check_outlined, VehicleOnboardingPage(embedded: true, title: 'Vehicle Onboarding')),
+      const _NavItem(
+        'Vehicle List',
+        Icons.directions_car_outlined,
+        VehicleOnboardingPage(
+          embedded: true,
+          title: 'Vehicle List',
+          adminView: AdminVehicleView.approvedOnly,
+        ),
+      ),
+      const _NavItem(
+        'Onboarding',
+        Icons.fact_check_outlined,
+        VehicleOnboardingPage(
+          embedded: true,
+          title: 'Vehicle Onboarding',
+          adminView: AdminVehicleView.onboardingQueue,
+        ),
+      ),
       const _NavItem('Locations', Icons.place_outlined, VehicleLocationDashboardPage(embedded: true)),
       const _NavItem('Service Jobs', Icons.build_circle_outlined, ServiceJobOrdersPage(embedded: true)),
       const _NavItem('Maintenance', Icons.calendar_month_outlined, MaintenanceScheduleAdminPage(embedded: true)),
@@ -141,3 +158,4 @@ class _NavItem {
   final IconData icon;
   final Widget page;
 }
+
