@@ -56,7 +56,9 @@ class _VehicleOnboardingPageState extends State<VehicleOnboardingPage> {
   }
 
   Future<void> _refresh() async {
-    setState(() => _future = _load());
+    setState(() {
+      _future = _load();
+    });
     await _future;
   }
 
@@ -125,6 +127,7 @@ class _VehicleOnboardingPageState extends State<VehicleOnboardingPage> {
         _s(row['eligibility_status']),
         _s(row['readiness_status']),
         _s(row['review_status']),
+        _activityStatus(row),
       ].join(' ').toLowerCase();
 
       final matchesSearch = query.isEmpty || haystack.contains(query);
@@ -134,6 +137,8 @@ class _VehicleOnboardingPageState extends State<VehicleOnboardingPage> {
         'Rejected' => _s(row['review_status']) == 'Rejected',
         'Eligible' => _s(row['eligibility_status']) == 'Eligible',
         'Ready' => _s(row['readiness_status']) == 'Ready',
+        'Active' => _activityStatus(row) == 'Active',
+        'Maintenance' => _activityStatus(row) == 'Maintenance',
         _ => true,
       };
 
@@ -142,6 +147,14 @@ class _VehicleOnboardingPageState extends State<VehicleOnboardingPage> {
   }
 
   String _s(dynamic value) => value == null ? '' : value.toString().trim();
+
+  String _activityStatus(Map<String, dynamic> row) {
+    final raw = _s(row['vehicle_status']);
+    final status = raw.toLowerCase();
+    if (status == 'available' || status == 'active') return 'Active';
+    if (status.contains('maint') || status == 'unavail' || status == 'unavailable') return 'Maintenance';
+    return raw.isEmpty ? 'Pending' : raw;
+  }
 
   Widget _buildBody(List<Map<String, dynamic>> rows) {
     final filtered = _applyFilters(rows);
@@ -167,6 +180,7 @@ class _VehicleOnboardingPageState extends State<VehicleOnboardingPage> {
                   record: record,
                   isAdminMode: _isAdminMode,
                   onEdit: () => _openRegistration(initial: record),
+                  activityStatus: _activityStatus(record),
                   onViewDetails: () => _openDetails(record),
                   onViewEligibility: () => _openEligibility(record),
                 ),
@@ -235,6 +249,8 @@ class _VehicleOnboardingPageState extends State<VehicleOnboardingPage> {
                       PopupMenuItem(value: 'Rejected', child: Text('Rejected')),
                       PopupMenuItem(value: 'Eligible', child: Text('Eligible')),
                       PopupMenuItem(value: 'Ready', child: Text('Ready')),
+                      PopupMenuItem(value: 'Active', child: Text('Active')),
+                      PopupMenuItem(value: 'Maintenance', child: Text('Maintenance')),
                     ],
                     icon: const Icon(Icons.tune_rounded),
                   ),
@@ -347,6 +363,7 @@ class _VehicleSummaryCard extends StatelessWidget {
     required this.record,
     required this.isAdminMode,
     required this.onEdit,
+    required this.activityStatus,
     required this.onViewDetails,
     required this.onViewEligibility,
   });
@@ -354,6 +371,7 @@ class _VehicleSummaryCard extends StatelessWidget {
   final Map<String, dynamic> record;
   final bool isAdminMode;
   final VoidCallback onEdit;
+  final String activityStatus;
   final VoidCallback onViewDetails;
   final VoidCallback onViewEligibility;
 
@@ -377,6 +395,7 @@ class _VehicleSummaryCard extends StatelessWidget {
     final eligibility = _s(record['eligibility_status']).isEmpty ? 'Pending' : _s(record['eligibility_status']);
     final readiness = _s(record['readiness_status']).isEmpty ? 'Pending' : _s(record['readiness_status']);
     final review = _s(record['review_status']).isEmpty ? 'Pending Review' : _s(record['review_status']);
+    final displayStatus = activityStatus.trim().isEmpty ? 'Pending' : activityStatus.trim();
 
     return AdminCard(
       child: Column(
@@ -481,7 +500,7 @@ class _VehicleSummaryCard extends StatelessWidget {
                     runSpacing: 8,
                     children: [
                       AdminStatusChip(status: review),
-                      AdminStatusChip(status: _s(record['vehicle_status']).isEmpty ? 'Pending' : _s(record['vehicle_status'])),
+                      AdminStatusChip(status: displayStatus),
                     ],
                   ),
                 ),

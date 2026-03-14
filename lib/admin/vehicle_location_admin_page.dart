@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../services/vehicle_location_service.dart';
 import 'widgets/admin_ui.dart';
 
 /// Admin: Manage location master data used by vehicles.
@@ -16,6 +17,8 @@ class VehicleLocationAdminPage extends StatefulWidget {
 class _VehicleLocationAdminPageState extends State<VehicleLocationAdminPage> {
   SupabaseClient get _supa => Supabase.instance.client;
 
+  late final VehicleLocationService _service;
+
   bool _loading = true;
   String? _error;
   List<Map<String, dynamic>> _rows = const [];
@@ -23,6 +26,7 @@ class _VehicleLocationAdminPageState extends State<VehicleLocationAdminPage> {
   @override
   void initState() {
     super.initState();
+    _service = VehicleLocationService(_supa);
     _load();
   }
 
@@ -112,10 +116,50 @@ class _VehicleLocationAdminPageState extends State<VehicleLocationAdminPage> {
   }
 
   Future<void> _toggleActive(Map<String, dynamic> row, bool value) async {
-    final id = (row['location_id'] ?? '').toString();
-    if (id.isEmpty) return;
+    final id = (row['location_id'] ?? '').toString().trim();
+    final name = (row['location_name'] ?? '').toString().trim();
+    final current = row['is_active'] as bool? ?? true;
+    if (id.isEmpty || name.isEmpty || current == value) return;
+
+    if (!value) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Deactivate branch?'),
+          content: Text(
+            'Vehicles assigned to "$name" will no longer be rentable. Any currently available vehicles there will be marked Inactive.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Deactivate'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+    }
+
     try {
-      await _supa.from('vehicle_location').update({'is_active': value}).eq('location_id', id);
+      final changed = await _service.updateBranchActiveState(
+        locationId: id,
+        locationName: name,
+        isActive: value,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            value
+                ? 'Branch activated. Vehicles stay inactive until an admin activates them again.'
+                : 'Branch deactivated. $changed vehicle${changed == 1 ? '' : 's'} marked Inactive.',
+          ),
+        ),
+      );
       await _load();
     } catch (error) {
       if (!mounted) return;

@@ -5,6 +5,23 @@ class VehicleLocationService {
 
   final SupabaseClient _client;
 
+  static const String sqlPatch = '''
+alter table public.vehicle_location
+  add column if not exists is_active boolean not null default true;
+
+alter table public.vehicle
+  add column if not exists vehicle_parking_slot text;
+
+alter table public.vehicle
+  add column if not exists location_updated_at timestamp with time zone;
+
+alter table public.vehicle_location_history
+  add column if not exists previous_parking_slot text;
+
+alter table public.vehicle_location_history
+  add column if not exists new_parking_slot text;
+''';
+
   String _s(dynamic value) => value == null ? '' : value.toString().trim();
 
   List<Map<String, dynamic>> _rows(dynamic response) {
@@ -21,22 +38,32 @@ class VehicleLocationService {
     return _rows(response);
   }
 
-  Future<List<String>> fetchLocations() async {
+  Future<Map<String, bool>> fetchLocationActiveMap() async {
     try {
       final response = await _client
           .from('vehicle_location')
           .select('location_name, is_active')
           .order('location_name', ascending: true);
-      final output = <String>[];
+      final output = <String, bool>{};
       for (final row in _rows(response)) {
         final name = _s(row['location_name']);
-        final active = row['is_active'] as bool? ?? true;
-        if (active && name.isNotEmpty) output.add(name);
+        if (name.isEmpty) continue;
+        output[name] = row['is_active'] as bool? ?? true;
       }
       return output;
     } catch (_) {
-      return const [];
+      return const {};
     }
+  }
+
+  Future<List<String>> fetchLocations() async {
+    final records = await fetchLocationActiveMap();
+    final output = <String>[];
+    for (final entry in records.entries) {
+      if (entry.value && entry.key.isNotEmpty) output.add(entry.key);
+    }
+    output.sort();
+    return output;
   }
 
   Future<List<Map<String, dynamic>>> fetchHistory({String? vehicleId}) async {
@@ -46,6 +73,61 @@ class VehicleLocationService {
     }
     final response = await query.order('moved_at', ascending: false);
     return _rows(response);
+  }
+
+  Future<int> updateBranchActiveState({
+    required String locationId,
+    required String locationName,
+    required bool isActive,
+  }) async {
+    await _client
+        .from('vehicle_location')
+        .update({'is_active': isActive})
+        .eq('location_id', locationId.trim());
+
+    if (isActive) return 0;
+
+    final vehicles = _rows(await _client
+        .from('vehicle')
+        .select('vehicle_id, vehicle_status')
+        .eq('vehicle_location', locationName.trim()));
+
+    var changed = 0;
+    for (final row in vehicles) {
+      final vehicleId = _s(row['vehicle_id']);
+      final status = _s(row['vehicle_status']).toLowerCase();
+      if (vehicleId.isEmpty) continue;
+      if (status == 'available' || status == 'active') {
+        await _client.from('vehicle').update({'vehicle_status': 'Inactive'}).eq('vehicle_id', vehicleId);
+        changed++;
+      }
+    }
+    return changed;
+  }
+
+  Future<void> updateVehicleActiveState({
+    required String vehicleId,
+    required bool isActive,
+    String? currentLocation,
+    bool branchIsActive = true,
+  }) async {
+    final cleanVehicleId = vehicleId.trim();
+    if (cleanVehicleId.isEmpty) {
+      throw Exception('Vehicle ID is required.');
+    }
+
+    if (isActive && _s(currentLocation).isEmpty) {
+      throw Exception('Assign the vehicle to an active branch before making it rentable.');
+    }
+
+    if (isActive && !branchIsActive) {
+      throw Exception('This branch is inactive. Activate the branch first before making the vehicle rentable.');
+    }
+
+    await _client
+        .from('vehicle')
+        .update({'vehicle_status': isActive ? 'Available' : 'Inactive'})
+        .eq('vehicle_id', cleanVehicleId);
   }
 
   Future<void> updateLocation({
@@ -104,6 +186,12 @@ class VehicleLocationService {
     }
   }
 
+  bool branchIsActive(Map<String, dynamic> vehicle) {
+    final value = vehicle['branch_is_active'];
+    if (value is bool) return value;
+    return true;
+  }
+
   String vehicleTitle(Map<String, dynamic> vehicle) {
     final brand = _s(vehicle['vehicle_brand']);
     final model = _s(vehicle['vehicle_model']);
@@ -123,8 +211,8 @@ class VehicleLocationService {
 
     final line = reason.split('\n').firstWhere(
           (item) => item.toLowerCase().startsWith('parking slot:'),
-          orElse: () => '',
-        );
+      orElse: () => '',
+    );
     if (line.isEmpty) return '';
     return line.split(':').skip(1).join(':').trim();
   }
@@ -154,10 +242,12 @@ class VehicleLocationService {
   String statusLabel(Map<String, dynamic> vehicle) {
     final location = _s(vehicle['vehicle_location']);
     final status = _s(vehicle['vehicle_status']).toLowerCase();
-    if (location.isEmpty) return 'Idle';
+    if (!branchIsActive(vehicle)) return 'Inactive';
+    if (status == 'inactive' || status.contains('deactive') || status == 'disabled') return 'Inactive';
+    if (location.isEmpty) return 'Pending';
     if (status == 'available' || status == 'active') return 'Active';
-    if (status.contains('maint') || status == 'unavail' || status == 'unavailable') return 'Maintenance';
-    if (status == 'pending' || status == 'processing' || status.isEmpty) return 'Idle';
+    if (status.contains('maintenance') || status == 'unavailable' || status == 'unavailable') return 'Maintenance';
+    if (status == 'pending' || status == 'processing' || status.isEmpty) return 'Pending';
     return 'Other';
   }
 

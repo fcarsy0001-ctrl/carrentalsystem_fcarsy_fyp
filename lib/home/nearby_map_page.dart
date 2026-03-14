@@ -14,6 +14,7 @@ import 'package:latlong2/latlong.dart';
 //   geolocator: ^10.1.0 (or compatible)
 import 'package:geolocator/geolocator.dart';
 
+import '../services/rentable_vehicle_service.dart';
 class NearbyMapPage extends StatefulWidget {
   const NearbyMapPage({super.key});
 
@@ -130,6 +131,8 @@ class _NearbyMapPageState extends State<NearbyMapPage> {
     });
 
     try {
+      final rentableService = RentableVehicleService(_supa);
+      final activeLocations = await rentableService.fetchActiveLocationNames();
       final rows = await _supa
           .from('vehicle')
           .select('vehicle_id, vehicle_brand, vehicle_model, vehicle_location, vehicle_status')
@@ -139,10 +142,10 @@ class _NearbyMapPageState extends State<NearbyMapPage> {
 
       final list = (rows as List)
           .map((e) => Map<String, dynamic>.from(e as Map))
+          .where((row) => rentableService.isInActiveBranch(row, activeLocations))
           .map(_VehicleMini.fromMap)
           .toList();
 
-      // group by location label
       for (final v in list) {
         final loc = v.location.trim().isEmpty ? '-' : v.location.trim();
         _vehiclesByLocation.putIfAbsent(loc, () => []).add(v);
@@ -153,7 +156,6 @@ class _NearbyMapPageState extends State<NearbyMapPage> {
         _loading = false;
       });
 
-      // start geocoding in the background (still in UI thread but after first paint)
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _geocodeAllLocations();
       });
@@ -262,7 +264,7 @@ class _NearbyMapPageState extends State<NearbyMapPage> {
                 Text('No cars at this location.', style: TextStyle(color: Colors.grey.shade700))
               else
                 ...vehicles.map(
-                  (v) => Padding(
+                      (v) => Padding(
                     padding: const EdgeInsets.symmetric(vertical: 6),
                     child: Row(
                       children: [
@@ -389,35 +391,35 @@ class _NearbyMapPageState extends State<NearbyMapPage> {
                                     .where((e) => e.value != null)
                                     .map(
                                       (e) => Marker(
-                                        point: e.value!,
-                                        width: 46,
-                                        height: 46,
-                                        child: GestureDetector(
-                                          onTap: () => _openLocationSheet(e.key),
-                                          child: Container(
-                                            decoration: BoxDecoration(
-                                              color: cs.primary.withOpacity(0.92),
-                                              shape: BoxShape.circle,
-                                              boxShadow: [
-                                                BoxShadow(
-                                                  blurRadius: 10,
-                                                  offset: const Offset(0, 4),
-                                                  color: Colors.black.withOpacity(0.18),
-                                                ),
-                                              ],
+                                    point: e.value!,
+                                    width: 46,
+                                    height: 46,
+                                    child: GestureDetector(
+                                      onTap: () => _openLocationSheet(e.key),
+                                      child: Container(
+                                        decoration: BoxDecoration(
+                                          color: cs.primary.withOpacity(0.92),
+                                          shape: BoxShape.circle,
+                                          boxShadow: [
+                                            BoxShadow(
+                                              blurRadius: 10,
+                                              offset: const Offset(0, 4),
+                                              color: Colors.black.withOpacity(0.18),
                                             ),
-                                            alignment: Alignment.center,
-                                            child: Text(
-                                              '${_vehiclesByLocation[e.key]?.length ?? 0}',
-                                              style: TextStyle(
-                                                color: cs.onPrimary,
-                                                fontWeight: FontWeight.w900,
-                                              ),
-                                            ),
+                                          ],
+                                        ),
+                                        alignment: Alignment.center,
+                                        child: Text(
+                                          '${_vehiclesByLocation[e.key]?.length ?? 0}',
+                                          style: TextStyle(
+                                            color: cs.onPrimary,
+                                            fontWeight: FontWeight.w900,
                                           ),
                                         ),
                                       ),
                                     ),
+                                  ),
+                                ),
                               ],
                             ),
                           ],
@@ -432,7 +434,7 @@ class _NearbyMapPageState extends State<NearbyMapPage> {
                       Expanded(
                         child: Text(
                           _geocoding
-                              ? 'Loading map pins… (converting location to coordinates)'
+                              ? 'Loading map pinsÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ (converting location to coordinates)'
                               : 'Tap a pin to see cars at that location.',
                           style: TextStyle(color: Colors.grey.shade700),
                         ),

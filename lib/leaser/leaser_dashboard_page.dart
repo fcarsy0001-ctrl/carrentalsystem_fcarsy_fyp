@@ -4,8 +4,10 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/analytics_service.dart';
 import '../core/widgets/simple_charts.dart';
+import '../admin/vehicle_location_dashboard_page.dart';
 import '../admin/vehicle_onboarding_page.dart';
 import 'reports_leaser_page.dart';
+import 'vehicle_onboarding_status_page.dart';
 
 class LeaserDashboardPage extends StatefulWidget {
   const LeaserDashboardPage({super.key, required this.leaserId});
@@ -41,7 +43,9 @@ class _LeaserDashboardPageState extends State<LeaserDashboardPage> {
   }
 
   Future<void> _refresh() async {
-    setState(() => _future = _load());
+    setState(() {
+      _future = _load();
+    });
     await _future;
   }
 
@@ -112,14 +116,40 @@ class _LeaserDashboardPageState extends State<LeaserDashboardPage> {
               const SizedBox(height: 14),
 
               _Section(
-                title: 'Vehicles',
-                subtitle: 'Manage your vehicles',
-                child: ElevatedButton.icon(
-                  onPressed: () => Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => VehicleOnboardingPage(leaserId: widget.leaserId, title: 'My Vehicles')),
-                  ),
-                  icon: const Icon(Icons.directions_car_outlined),
-                  label: const Text('Open Vehicle Module'),
+                title: 'Fleet Tools',
+                subtitle: 'Manage vehicles, track locations, and monitor onboarding progress',
+                child: Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: [
+                    ElevatedButton.icon(
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => VehicleOnboardingPage(leaserId: widget.leaserId, title: 'My Vehicles')),
+                      ),
+                      icon: const Icon(Icons.directions_car_outlined),
+                      label: const Text('My Vehicles'),
+                    ),
+                    ElevatedButton.icon(
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => VehicleLocationDashboardPage(
+                            leaserId: widget.leaserId,
+                            title: 'Vehicle Locations',
+                            allowManageLocations: false,
+                          ),
+                        ),
+                      ),
+                      icon: const Icon(Icons.place_outlined),
+                      label: const Text('Vehicle Locations'),
+                    ),
+                    ElevatedButton.icon(
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => VehicleOnboardingStatusPage(leaserId: widget.leaserId)),
+                      ),
+                      icon: const Icon(Icons.track_changes_outlined),
+                      label: const Text('Onboarding Status'),
+                    ),
+                  ],
                 ),
               ),
 
@@ -127,7 +157,7 @@ class _LeaserDashboardPageState extends State<LeaserDashboardPage> {
 
               _Section(
                 title: 'Booking rate (last 14 days)',
-                subtitle: '${_fmtDate(d.start)} → ${_fmtDate(d.end)}',
+                subtitle: '${_fmtDate(d.start)} -> ${_fmtDate(d.end)}',
                 child: SimpleBarChart(values: counts),
               ),
 
@@ -234,4 +264,6 @@ class _Section extends StatelessWidget {
     );
   }
 }
+
+
 

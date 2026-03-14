@@ -103,7 +103,7 @@ class _VehicleAdminPageState extends State<VehicleAdminPage> {
         } catch (e) {
           final s = e.toString();
           final isNotFound = (e is FunctionException &&
-                  (e.status == 404 || (e.details ?? '').toString().contains('NOT_FOUND'))) ||
+              (e.status == 404 || (e.details ?? '').toString().contains('NOT_FOUND'))) ||
               s.contains('Requested function was not found') ||
               s.contains('NOT_FOUND') ||
               s.contains('Not Found');
@@ -183,103 +183,103 @@ class _VehicleAdminPageState extends State<VehicleAdminPage> {
         onRefresh: _refresh,
         child: rows.isEmpty
             ? ListView(
-                padding: const EdgeInsets.fromLTRB(16, 18, 16, 16),
-                children: const [
-                  Center(child: Text('No vehicles yet')),
-                ],
-              )
+          padding: const EdgeInsets.fromLTRB(16, 18, 16, 16),
+          children: const [
+            Center(child: Text('No vehicles yet')),
+          ],
+        )
             : ListView.separated(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-                itemCount: rows.length,
-                separatorBuilder: (_, __) => const SizedBox(height: 10),
-                itemBuilder: (context, i) {
-                  final r = rows[i];
-                  final title = '${_s(r['vehicle_brand'])} ${_s(r['vehicle_model'])}'.trim();
-                  final plate = _s(r['vehicle_plate_no']);
-                  final status = _s(r['vehicle_status']);
-                  final rate = _s(r['daily_rate']);
-                  return AdminCard(
-                    child: ListTile(
-                      title: Text(
-                        title.isEmpty ? 'Vehicle' : title,
-                        style: const TextStyle(fontWeight: FontWeight.w800),
-                      ),
-                      subtitle: Text(
-                        'ID: ${_s(r['vehicle_id'])}\n'
-                        'Plate: ${plate.isEmpty ? '-' : plate}\n'
-                        'Rate: RM $rate / day',
-                      ),
-                      isThreeLine: true,
-                      trailing: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          AdminStatusChip(status: status),
-                          PopupMenuButton<String>(
-                            onSelected: (v) {
-                              if (v == 'edit') {
-                                _openUpsert(initial: r);
-                              } else if (v == 'delete') {
-                                _confirmDelete(r);
-                              }
-                            },
-                            itemBuilder: (ctx) => const [
-                              PopupMenuItem(value: 'edit', child: Text('Edit')),
-                              PopupMenuItem(value: 'delete', child: Text('Delete')),
-                            ],
-                          ),
-                        ],
-                      ),
-                      onTap: () => _openUpsert(initial: r),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+          itemCount: rows.length,
+          separatorBuilder: (_, __) => const SizedBox(height: 10),
+          itemBuilder: (context, i) {
+            final r = rows[i];
+            final title = '${_s(r['vehicle_brand'])} ${_s(r['vehicle_model'])}'.trim();
+            final plate = _s(r['vehicle_plate_no']);
+            final status = _s(r['vehicle_status']);
+            final rate = _s(r['daily_rate']);
+            return AdminCard(
+              child: ListTile(
+                title: Text(
+                  title.isEmpty ? 'Vehicle' : title,
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+                subtitle: Text(
+                  'ID: ${_s(r['vehicle_id'])}\n'
+                      'Plate: ${plate.isEmpty ? '-' : plate}\n'
+                      'Rate: RM $rate / day',
+                ),
+                isThreeLine: true,
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    AdminStatusChip(status: status),
+                    PopupMenuButton<String>(
+                      onSelected: (v) {
+                        if (v == 'edit') {
+                          _openUpsert(initial: r);
+                        } else if (v == 'delete') {
+                          _confirmDelete(r);
+                        }
+                      },
+                      itemBuilder: (ctx) => const [
+                        PopupMenuItem(value: 'edit', child: Text('Edit')),
+                        PopupMenuItem(value: 'delete', child: Text('Delete')),
+                      ],
                     ),
-                  );
-                },
+                  ],
+                ),
+                onTap: () => _openUpsert(initial: r),
               ),
+            );
+          },
+        ),
       );
     }
 
     final listBody = leaserMode
         ? StreamBuilder<List<Map<String, dynamic>>>(
-            stream: _supa
-                .from('vehicle')
-                .stream(primaryKey: ['vehicle_id'])
-                .eq('leaser_id', widget.leaserId!.trim())
-                .order('vehicle_id', ascending: false),
-            builder: (context, snap) {
-              if (snap.hasError) {
-                return Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Text('Failed to load: ${snap.error}'),
-                  ),
-                );
-              }
-              final rows = (snap.data ?? const [])
-                  .map((e) => Map<String, dynamic>.from(e))
-                  .toList();
-              if (snap.connectionState == ConnectionState.waiting && rows.isEmpty) {
-                return const Center(child: CircularProgressIndicator());
-              }
-              return buildList(rows);
-            },
-          )
-        : FutureBuilder<List<Map<String, dynamic>>>(
-            future: _future,
-            builder: (context, snap) {
-              if (snap.connectionState != ConnectionState.done) {
-                return const Center(child: CircularProgressIndicator());
-              }
-              if (snap.hasError) {
-                return Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Text('Failed to load: ${snap.error}'),
-                  ),
-                );
-              }
-              final rows = snap.data ?? const [];
-              return buildList(rows);
-            },
+      stream: _supa
+          .from('vehicle')
+          .stream(primaryKey: ['vehicle_id'])
+          .eq('leaser_id', widget.leaserId!.trim())
+          .order('vehicle_id', ascending: false),
+      builder: (context, snap) {
+        if (snap.hasError) {
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text('Failed to load: ${snap.error}'),
+            ),
           );
+        }
+        final rows = (snap.data ?? const [])
+            .map((e) => Map<String, dynamic>.from(e))
+            .toList();
+        if (snap.connectionState == ConnectionState.waiting && rows.isEmpty) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        return buildList(rows);
+      },
+    )
+        : FutureBuilder<List<Map<String, dynamic>>>(
+      future: _future,
+      builder: (context, snap) {
+        if (snap.connectionState != ConnectionState.done) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        if (snap.hasError) {
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text('Failed to load: ${snap.error}'),
+            ),
+          );
+        }
+        final rows = snap.data ?? const [];
+        return buildList(rows);
+      },
+    );
 
     if (widget.embedded) {
       return Column(
@@ -533,64 +533,64 @@ class _VehicleUpsertPageState extends State<_VehicleUpsertPage> {
   }
 
   Future<void> _loadLocations() async {
-  if (_locLoading) return;
-  if (!mounted) return;
-  setState(() => _locLoading = true);
-  try {
-    final rows = await _supa
-        .from('vehicle_location')
-        .select('location_name, is_active')
-        .order('location_name', ascending: true);
+    if (_locLoading) return;
+    if (!mounted) return;
+    setState(() => _locLoading = true);
+    try {
+      final rows = await _supa
+          .from('vehicle_location')
+          .select('location_name, is_active')
+          .order('location_name', ascending: true);
 
-    final list = <String>[];
-    for (final r in (rows as List)) {
-      final m = Map<String, dynamic>.from(r as Map);
-      final active = (m['is_active'] as bool?) ?? true;
-      final name = (m['location_name'] ?? '').toString().trim();
-      if (!active) continue;
-      if (name.isEmpty) continue;
-      list.add(name);
-    }
-
-    final current = (_locationValue ?? '').trim();
-    String? invalid;
-
-    // For edit: if existing value is NOT in active list, show it as invalid and force re-select.
-    if (widget.isEdit && current.isNotEmpty && !list.contains(current)) {
-      invalid = current;
-    }
-
-    // Auto default (new vehicle or missing value) to first active location.
-    String? nextValue = _locationValue;
-    if (invalid != null) {
-      nextValue = null;
-    } else if ((nextValue ?? '').trim().isEmpty) {
-      nextValue = list.isNotEmpty ? list.first : null;
-    } else {
-      // If value exists but is not in list (new vehicle), force to first active.
-      if (!widget.isEdit && list.isNotEmpty && !list.contains(nextValue)) {
-        nextValue = list.first;
+      final list = <String>[];
+      for (final r in (rows as List)) {
+        final m = Map<String, dynamic>.from(r as Map);
+        final active = (m['is_active'] as bool?) ?? true;
+        final name = (m['location_name'] ?? '').toString().trim();
+        if (!active) continue;
+        if (name.isEmpty) continue;
+        list.add(name);
       }
-    }
 
-    if (!mounted) return;
-    setState(() {
-      _locationOptions = list;
-      _invalidExistingLocation = invalid;
-      _locationValue = nextValue;
-      _loc.text = (nextValue ?? '').trim();
-    });
-  } catch (_) {
-    if (!mounted) return;
-    setState(() {
-      _locationOptions = const [];
-      _invalidExistingLocation = null;
-    });
-  } finally {
-    if (!mounted) return;
-    setState(() => _locLoading = false);
+      final current = (_locationValue ?? '').trim();
+      String? invalid;
+
+      // For edit: if existing value is NOT in active list, show it as invalid and force re-select.
+      if (widget.isEdit && current.isNotEmpty && !list.contains(current)) {
+        invalid = current;
+      }
+
+      // Auto default (new vehicle or missing value) to first active location.
+      String? nextValue = _locationValue;
+      if (invalid != null) {
+        nextValue = null;
+      } else if ((nextValue ?? '').trim().isEmpty) {
+        nextValue = list.isNotEmpty ? list.first : null;
+      } else {
+        // If value exists but is not in list (new vehicle), force to first active.
+        if (!widget.isEdit && list.isNotEmpty && !list.contains(nextValue)) {
+          nextValue = list.first;
+        }
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _locationOptions = list;
+        _invalidExistingLocation = invalid;
+        _locationValue = nextValue;
+        _loc.text = (nextValue ?? '').trim();
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _locationOptions = const [];
+        _invalidExistingLocation = null;
+      });
+    } finally {
+      if (!mounted) return;
+      setState(() => _locLoading = false);
+    }
   }
-}
 
   Future<String?> _resolveExistingPhotoUrl(String path) async {
     final p = path.trim();
@@ -645,10 +645,10 @@ class _VehicleUpsertPageState extends State<_VehicleUpsertPage> {
     final contentType = ext == 'png' ? 'image/png' : 'image/jpeg';
     final path = 'vehicles/$vehicleId-${DateTime.now().millisecondsSinceEpoch}.$ext';
     await _supa.storage.from('vehicle_photos').uploadBinary(
-          path,
-          _photoBytes!,
-          fileOptions: FileOptions(contentType: contentType, upsert: true),
-        );
+      path,
+      _photoBytes!,
+      fileOptions: FileOptions(contentType: contentType, upsert: true),
+    );
     return path;
   }
 
@@ -673,7 +673,7 @@ class _VehicleUpsertPageState extends State<_VehicleUpsertPage> {
       if (hasPickedPhoto) {
         photoPath = await _uploadVehiclePhoto(vehicleId: id);
       }
-final forcedLeaserId = (widget.fixedLeaserId ?? '').trim();
+      final forcedLeaserId = (widget.fixedLeaserId ?? '').trim();
 
       // Location must come from existing active locations (no free text / no default KL).
       if (_locationOptions.isEmpty) {
@@ -723,7 +723,7 @@ final forcedLeaserId = (widget.fixedLeaserId ?? '').trim();
           } catch (e) {
             final s = e.toString();
             final isNotFound = (e is FunctionException &&
-                    (e.status == 404 || (e.details ?? '').toString().contains('NOT_FOUND'))) ||
+                (e.status == 404 || (e.details ?? '').toString().contains('NOT_FOUND'))) ||
                 s.contains('Requested function was not found') ||
                 s.contains('NOT_FOUND') ||
                 s.contains('Not Found');
@@ -1101,58 +1101,59 @@ final forcedLeaserId = (widget.fixedLeaserId ?? '').trim();
                 ],
               ),
               const SizedBox(height: 10),
-              
-if (_locationOptions.isNotEmpty)
-  DropdownButtonFormField<String>(
-    value: (_locationValue != null && _locationOptions.contains(_locationValue)) ? _locationValue : null,
-    decoration: InputDecoration(
-      labelText: 'Location',
-      helperText: (_invalidExistingLocation ?? '').trim().isNotEmpty
-          ? 'Current location "${_invalidExistingLocation!}" is not in the active list. Please select a valid location.'
-          : null,
-      suffixIcon: _locLoading
-          ? const Padding(
-              padding: EdgeInsets.all(12),
-              child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
-            )
-          : null,
-    ),
-    items: _locationOptions.map((t) => DropdownMenuItem(value: t, child: Text(t))).toList(),
-    hint: const Text('Select location'),
-    onChanged: (v) {
-      final nv = (v ?? '').trim();
-      if (nv.isEmpty) return;
-      setState(() {
-        _locationValue = nv;
-        _loc.text = nv;
-        _invalidExistingLocation = null;
-      });
-    },
-    validator: (v) {
-      final t = (v ?? '').trim();
-      if (t.isEmpty) return 'Required';
-      if (!_locationOptions.contains(t)) return 'Select a valid location';
-      return null;
-    },
-  )
-else
-  TextFormField(
-    controller: _loc,
-    readOnly: true,
-    decoration: const InputDecoration(
-      labelText: 'Location',
-      hintText: 'Add locations first (Admin > Vehicles > Manage Locations)',
-    ),
-    validator: (_) => 'Please add at least 1 location first',
-  ),
-const SizedBox(height: 10),
+
+              if (_locationOptions.isNotEmpty)
+                DropdownButtonFormField<String>(
+                  value: (_locationValue != null && _locationOptions.contains(_locationValue)) ? _locationValue : null,
+                  decoration: InputDecoration(
+                    labelText: 'Location',
+                    helperText: (_invalidExistingLocation ?? '').trim().isNotEmpty
+                        ? 'Current location "${_invalidExistingLocation!}" is not in the active list. Please select a valid location.'
+                        : null,
+                    suffixIcon: _locLoading
+                        ? const Padding(
+                      padding: EdgeInsets.all(12),
+                      child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+                    )
+                        : null,
+                  ),
+                  items: _locationOptions.map((t) => DropdownMenuItem(value: t, child: Text(t))).toList(),
+                  hint: const Text('Select location'),
+                  onChanged: (v) {
+                    final nv = (v ?? '').trim();
+                    if (nv.isEmpty) return;
+                    setState(() {
+                      _locationValue = nv;
+                      _loc.text = nv;
+                      _invalidExistingLocation = null;
+                    });
+                  },
+                  validator: (v) {
+                    final t = (v ?? '').trim();
+                    if (t.isEmpty) return 'Required';
+                    if (!_locationOptions.contains(t)) return 'Select a valid location';
+                    return null;
+                  },
+                )
+              else
+                TextFormField(
+                  controller: _loc,
+                  readOnly: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Location',
+                    hintText: 'Add locations first (Admin > Vehicles > Manage Locations)',
+                  ),
+                  validator: (_) => 'Please add at least 1 location first',
+                ),
+              const SizedBox(height: 10),
               DropdownButtonFormField<String>(
                 value: _status,
                 decoration: const InputDecoration(labelText: 'Status'),
                 items: const [
                   DropdownMenuItem(value: 'Available', child: Text('Available')),
+                  DropdownMenuItem(value: 'Inactive', child: Text('Inactive')),
                   // Keep values <= 10 chars for varchar(10) schemas.
-                  DropdownMenuItem(value: 'Unavail', child: Text('Unavailable')),
+                  DropdownMenuItem(value: 'Unavailable', child: Text('Unavailable')),
                   DropdownMenuItem(value: 'Maintain', child: Text('Maintenance')),
                 ],
                 onChanged: (v) => setState(() => _status = v ?? 'Available'),

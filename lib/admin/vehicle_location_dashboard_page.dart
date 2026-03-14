@@ -56,6 +56,7 @@ class _VehicleLocationDashboardPageState extends State<VehicleLocationDashboardP
   Future<_LocationDashboardData> _load() async {
     final vehicles = await _service.fetchVehicles(leaserId: widget.leaserId);
     final history = await _service.fetchHistory();
+    final activeLocations = await _service.fetchLocationActiveMap();
     final latestByVehicle = <String, Map<String, dynamic>>{};
     for (final row in history) {
       final vehicleId = _s(row['vehicle_id']);
@@ -66,11 +67,15 @@ class _VehicleLocationDashboardPageState extends State<VehicleLocationDashboardP
 
     final enriched = vehicles.map((vehicle) {
       final latest = latestByVehicle[_s(vehicle['vehicle_id'])];
-      return {
+      final record = {
         ...vehicle,
+        'branch_is_active': activeLocations[_s(vehicle['vehicle_location'])] ?? true,
         'current_parking_slot': _service.currentParkingSlot(vehicle, latestHistory: latest),
         'location_last_updated': _service.currentUpdatedAt(vehicle, latestHistory: latest),
-        'location_status_label': _service.statusLabel(vehicle),
+      };
+      return {
+        ...record,
+        'location_status_label': _service.statusLabel(record),
       };
     }).toList();
 
@@ -78,7 +83,9 @@ class _VehicleLocationDashboardPageState extends State<VehicleLocationDashboardP
   }
 
   Future<void> _refresh() async {
-    setState(() => _future = _load());
+    setState(() {
+      _future = _load();
+    });
     await _future;
   }
 
@@ -111,6 +118,71 @@ class _VehicleLocationDashboardPageState extends State<VehicleLocationDashboardP
     await _refresh();
   }
 
+  Future<void> _toggleVehicleRentalStatus(Map<String, dynamic> record) async {
+    final vehicleId = _s(record['vehicle_id']);
+    final status = _s(record['vehicle_status']).toLowerCase();
+    final branchActive = _service.branchIsActive(record);
+    final isInactive = status == 'inactive' || status.contains('deactive') || status == 'disabled';
+    final activateVehicle = isInactive;
+
+    if (activateVehicle && !branchActive) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('This branch is inactive. Activate the branch first.')),
+      );
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(activateVehicle ? 'Set vehicle active?' : 'Set vehicle inactive?'),
+        content: Text(
+          activateVehicle
+              ? 'This vehicle will become rentable again for users.'
+              : 'This vehicle will no longer appear as rentable until an admin activates it again.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(activateVehicle ? 'Set Active' : 'Set Inactive'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    try {
+      await _service.updateVehicleActiveState(
+        vehicleId: vehicleId,
+        isActive: activateVehicle,
+        currentLocation: _s(record['vehicle_location']),
+        branchIsActive: branchActive,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            activateVehicle
+                ? 'Vehicle activated and rentable again.'
+                : 'Vehicle set to inactive. It can no longer be rented.',
+          ),
+        ),
+      );
+      await _refresh();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(_service.explainError(error)), backgroundColor: Colors.red),
+      );
+    }
+  }
+
   List<Map<String, dynamic>> _filtered(List<Map<String, dynamic>> vehicles) {
     final query = _searchController.text.trim().toLowerCase();
     return vehicles.where((vehicle) {
@@ -134,10 +206,11 @@ class _VehicleLocationDashboardPageState extends State<VehicleLocationDashboardP
   Widget _buildSummary(List<Map<String, dynamic>> vehicles) {
     final total = vehicles.length;
     final active = vehicles.where((v) => _s(v['location_status_label']) == 'Active').length;
-    final idle = vehicles.where((v) => _s(v['location_status_label']) == 'Idle').length;
+    final inactive = vehicles.where((v) => _s(v['location_status_label']) == 'Inactive').length;
+    final pending = vehicles.where((v) => _s(v['location_status_label']) == 'Pending').length;
     final other = vehicles.where((v) {
       final status = _s(v['location_status_label']);
-      return status != 'Active' && status != 'Idle';
+      return status != 'Active' && status != 'Inactive' && status != 'Pending';
     }).length;
 
     return Wrap(
@@ -146,7 +219,8 @@ class _VehicleLocationDashboardPageState extends State<VehicleLocationDashboardP
       children: [
         _SummaryCard(label: 'Total', value: '$total', tone: Colors.blue),
         _SummaryCard(label: 'Active', value: '$active', tone: Colors.green),
-        _SummaryCard(label: 'Idle', value: '$idle', tone: Colors.orange),
+        _SummaryCard(label: 'Inactive', value: '$inactive', tone: Colors.redAccent),
+        _SummaryCard(label: 'Pending', value: '$pending', tone: Colors.orange),
         _SummaryCard(label: 'Other', value: '$other', tone: Colors.grey),
       ],
     );
@@ -169,7 +243,8 @@ class _VehicleLocationDashboardPageState extends State<VehicleLocationDashboardP
               itemBuilder: (_) => const [
                 PopupMenuItem(value: 'All', child: Text('All status')),
                 PopupMenuItem(value: 'Active', child: Text('Active')),
-                PopupMenuItem(value: 'Idle', child: Text('Idle')),
+                PopupMenuItem(value: 'Inactive', child: Text('Inactive')),
+                PopupMenuItem(value: 'Pending', child: Text('Pending')),
                 PopupMenuItem(value: 'Maintenance', child: Text('Maintenance')),
                 PopupMenuItem(value: 'Other', child: Text('Other')),
               ],
@@ -230,12 +305,13 @@ class _VehicleLocationDashboardPageState extends State<VehicleLocationDashboardP
             ),
           ),
           ...grouped[branch]!.map(
-            (vehicle) => Padding(
+                (vehicle) => Padding(
               padding: const EdgeInsets.only(bottom: 10),
               child: _LocationVehicleCard(
                 record: vehicle,
                 onTap: () => _openConfirm(vehicle),
                 onHistory: () => _openHistory(vehicle),
+                onToggleRentalStatus: _isAdminMode ? () => _toggleVehicleRentalStatus(vehicle) : null,
               ),
             ),
           ),
@@ -379,11 +455,13 @@ class _LocationVehicleCard extends StatelessWidget {
     required this.record,
     required this.onTap,
     required this.onHistory,
+    this.onToggleRentalStatus,
   });
 
   final Map<String, dynamic> record;
   final VoidCallback onTap;
   final VoidCallback onHistory;
+  final VoidCallback? onToggleRentalStatus;
 
   String _s(dynamic value) => value == null ? '' : value.toString().trim();
 
@@ -405,6 +483,8 @@ class _LocationVehicleCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final slot = _s(record['current_parking_slot']);
     final status = _s(record['location_status_label']).isEmpty ? 'Other' : _s(record['location_status_label']);
+    final branchActive = record['branch_is_active'] as bool? ?? true;
+    final isInactive = status.toLowerCase() == 'inactive';
 
     return InkWell(
       onTap: onTap,
@@ -428,6 +508,13 @@ class _LocationVehicleCard extends StatelessWidget {
               ),
               const SizedBox(height: 4),
               Text(_title(), style: TextStyle(color: Colors.grey.shade800, fontWeight: FontWeight.w600)),
+              if (!branchActive) ...[
+                const SizedBox(height: 6),
+                Text(
+                  'Branch inactive. This vehicle cannot be rented.',
+                  style: TextStyle(color: Colors.orange.shade900, fontWeight: FontWeight.w700, fontSize: 12),
+                ),
+              ],
               const SizedBox(height: 8),
               Row(
                 children: [
@@ -452,6 +539,12 @@ class _LocationVehicleCard extends StatelessWidget {
                       style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
                     ),
                   ),
+                  if (onToggleRentalStatus != null)
+                    IconButton(
+                      tooltip: isInactive ? 'Set Active' : 'Set Inactive',
+                      onPressed: onToggleRentalStatus,
+                      icon: Icon(isInactive ? Icons.check_circle_outline : Icons.block_outlined),
+                    ),
                   IconButton(
                     tooltip: 'Location history',
                     onPressed: onHistory,

@@ -31,7 +31,9 @@ class _VehicleOnboardingStatusPageState extends State<VehicleOnboardingStatusPag
   }
 
   Future<void> _refresh() async {
-    setState(() => _future = _service.fetchVehicles(leaserId: widget.leaserId));
+    setState(() {
+      _future = _service.fetchVehicles(leaserId: widget.leaserId);
+    });
     await _future;
   }
 
@@ -102,8 +104,8 @@ class _VehicleOnboardingStatusPageState extends State<VehicleOnboardingStatusPag
         final finalLabel = reviewStatus == 'Approved'
             ? 'Approved'
             : reviewStatus == 'Rejected'
-                ? 'Rejected'
-                : 'Pending';
+            ? 'Rejected'
+            : 'Pending';
         final passedChecks = [
           selected['age_passed'] == true,
           selected['mileage_passed'] == true,
@@ -310,23 +312,23 @@ class _StatusBanner extends StatelessWidget {
     final bg = isRejected
         ? Colors.red.withOpacity(0.08)
         : isApproved
-            ? Colors.green.withOpacity(0.08)
-            : Colors.orange.withOpacity(0.08);
+        ? Colors.green.withOpacity(0.08)
+        : Colors.orange.withOpacity(0.08);
     final border = isRejected
         ? Colors.red.withOpacity(0.25)
         : isApproved
-            ? Colors.green.withOpacity(0.25)
-            : Colors.orange.withOpacity(0.25);
+        ? Colors.green.withOpacity(0.25)
+        : Colors.orange.withOpacity(0.25);
     final title = isRejected
         ? 'Rejected'
         : isApproved
-            ? 'Approved'
-            : 'Under Review';
+        ? 'Approved'
+        : 'Under Review';
     final message = isRejected
         ? 'The submission needs changes before it can proceed.'
         : isApproved
-            ? 'The vehicle has passed review and is ready for the next step.'
-            : 'Our team is currently reviewing your documents and vehicle information.';
+        ? 'The vehicle has passed review and is ready for the next step.'
+        : 'Our team is currently reviewing your documents and vehicle information.';
 
     return Container(
       padding: const EdgeInsets.all(14),
