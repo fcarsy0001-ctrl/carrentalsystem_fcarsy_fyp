@@ -5,6 +5,7 @@ import '../config/supabase_config.dart';
 import 'register.dart';
 import 'reset_password.dart';
 import '../leaser/leaser_register_page.dart';
+import '../vendor/vendor_register_page.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({Key? key}) : super(key: key);
@@ -357,7 +358,7 @@ class _LoginPageState extends State<LoginPage> {
 
                   const SizedBox(height: 8),
 
-                  // Become Leaser
+                  // Become Leaser / Vendor
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
@@ -372,12 +373,40 @@ class _LoginPageState extends State<LoginPage> {
                                 Navigator.push(
                                   context,
                                   MaterialPageRoute(
-                                    builder: (context) => LeaserRegisterPage(),
+                                    builder: (context) => const LeaserRegisterPage(),
                                   ),
                                 );
                               },
                         child: Text(
                           'Become Leaser',
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.primary,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        'Provide maintenance services? ',
+                        style: TextStyle(color: Colors.grey[600]),
+                      ),
+                      TextButton(
+                        onPressed: _isLoading
+                            ? null
+                            : () {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (context) => const VendorRegisterPage(),
+                                  ),
+                                );
+                              },
+                        child: Text(
+                          'Become Vendor',
                           style: TextStyle(
                             color: Theme.of(context).colorScheme.primary,
                             fontWeight: FontWeight.bold,

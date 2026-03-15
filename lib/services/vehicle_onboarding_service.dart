@@ -136,6 +136,28 @@ alter table public.vehicle_onboarding
     }
   }
 
+  Future<Map<String, Map<String, dynamic>>> _fetchOpenJobsByVehicleId() async {
+    try {
+      final jobs = _rows(
+        await _client
+            .from('service_job_order')
+            .select('job_order_id, vehicle_id, job_type, status, preferred_date, vendor_id, created_at, updated_at')
+            .inFilter('status', ['Pending', 'In Progress'])
+            .order('updated_at', ascending: false),
+      );
+
+      final byVehicleId = <String, Map<String, dynamic>>{};
+      for (final row in jobs) {
+        final vehicleId = _s(row['vehicle_id']);
+        if (vehicleId.isNotEmpty && !byVehicleId.containsKey(vehicleId)) {
+          byVehicleId[vehicleId] = row;
+        }
+      }
+      return byVehicleId;
+    } catch (_) {
+      return const {};
+    }
+  }
   Future<List<Map<String, dynamic>>> fetchVehicles({String? leaserId}) async {
     final base = _client.from('vehicle').select('*');
     final query = _s(leaserId).isEmpty ? base : base.eq('leaser_id', leaserId!.trim());
@@ -154,9 +176,18 @@ alter table public.vehicle_onboarding
       if (id.isNotEmpty) byVehicleId[id] = row;
     }
 
-    return vehicles.map((vehicle) => _mergeVehicleRecord(vehicle, byVehicleId[_s(vehicle['vehicle_id'])])).toList();
-  }
+    final openJobsByVehicleId = await _fetchOpenJobsByVehicleId();
 
+    return vehicles
+        .map(
+          (vehicle) => _mergeVehicleRecord(
+        vehicle,
+        byVehicleId[_s(vehicle['vehicle_id'])],
+        openJobsByVehicleId[_s(vehicle['vehicle_id'])],
+      ),
+    )
+        .toList();
+  }
   Future<Map<String, dynamic>?> fetchVehicleDetail(String vehicleId) async {
     final rows = _rows(await _client.from('vehicle').select('*').eq('vehicle_id', vehicleId).limit(1));
     if (rows.isEmpty) return null;
@@ -171,9 +202,21 @@ alter table public.vehicle_onboarding
       if (row != null) onboarding = Map<String, dynamic>.from(row as Map);
     } catch (_) {}
 
-    return _mergeVehicleRecord(rows.first, onboarding);
-  }
+    Map<String, dynamic>? activeJob;
+    try {
+      final row = await _client
+          .from('service_job_order')
+          .select('job_order_id, vehicle_id, job_type, status, preferred_date, vendor_id, created_at, updated_at')
+          .eq('vehicle_id', vehicleId)
+          .inFilter('status', ['Pending', 'In Progress'])
+          .order('updated_at', ascending: false)
+          .limit(1)
+          .maybeSingle();
+      if (row != null) activeJob = Map<String, dynamic>.from(row as Map);
+    } catch (_) {}
 
+    return _mergeVehicleRecord(rows.first, onboarding, activeJob);
+  }
   Future<String?> createSignedAssetUrl(String? path) async {
     final clean = _s(path);
     if (clean.isEmpty) return null;
@@ -539,9 +582,19 @@ Review Remark: ${remark.isEmpty ? '-' : remark}
   Map<String, dynamic> _mergeVehicleRecord(
       Map<String, dynamic> vehicle,
       Map<String, dynamic>? onboarding,
+      Map<String, dynamic>? activeJob,
       ) {
     final base = Map<String, dynamic>.from(vehicle);
     final extra = onboarding == null ? <String, dynamic>{} : Map<String, dynamic>.from(onboarding);
+    final job = activeJob == null ? <String, dynamic>{} : Map<String, dynamic>.from(activeJob);
+    final hasOpenJob = job.isNotEmpty;
+    final baseVehicleStatus = _s(base['vehicle_status']).isEmpty ? 'Pending' : _s(base['vehicle_status']);
+    final mergedVehicleStatus = hasOpenJob && baseVehicleStatus.toLowerCase() != 'inactive'
+        ? 'Maintenance'
+        : baseVehicleStatus;
+    final serviceLockReason = hasOpenJob
+        ? 'Blocked from rental because job order ${_s(job['job_order_id'])} is ${_s(job['status']).isEmpty ? 'Pending' : _s(job['status'])}.'
+        : '';
 
     final evaluation = evaluateVehicle(
       vehicleYear: _i(base['vehicle_year']),
@@ -565,7 +618,14 @@ Review Remark: ${remark.isEmpty ? '-' : remark}
       'condition_status': _s(base['condition_status']).isEmpty ? 'Pending' : _s(base['condition_status']),
       'remarks': _s(extra['remarks']),
       'review_remark': _s(extra['review_remark']),
-      'vehicle_status': _s(base['vehicle_status']).isEmpty ? 'Pending' : _s(base['vehicle_status']),
+      'base_vehicle_status': baseVehicleStatus,
+      'vehicle_status': mergedVehicleStatus,
+      'has_open_job_order': hasOpenJob,
+      'active_job_order_id': _s(job['job_order_id']),
+      'active_job_status': _s(job['status']),
+      'active_job_type': _s(job['job_type']),
+      'active_job_preferred_date': _s(job['preferred_date']),
+      'service_lock_reason': serviceLockReason,
     };
   }
 }

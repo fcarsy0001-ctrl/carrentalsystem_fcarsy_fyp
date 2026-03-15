@@ -99,9 +99,9 @@ class _VehicleOnboardingPageState extends State<VehicleOnboardingPage> {
     }
     return switch (widget.adminView) {
       AdminVehicleView.approvedOnly =>
-      'Approved vehicles that are ready for fleet operations',
+      'Approved vehicles, including vehicles currently under service job orders',
       AdminVehicleView.onboardingQueue =>
-      'Review pending and rejected vehicles, update condition, and manage eligibility',
+      'Review pending, rejected, and inactive vehicles, update condition, and manage eligibility',
       AdminVehicleView.all =>
       'Fleet management for onboarding and eligibility control',
     };
@@ -125,6 +125,7 @@ class _VehicleOnboardingPageState extends State<VehicleOnboardingPage> {
         'All',
         'Pending Review',
         'Rejected',
+        'Inactive',
         'Eligible',
         'Ready',
         'Active',
@@ -136,6 +137,7 @@ class _VehicleOnboardingPageState extends State<VehicleOnboardingPage> {
       'Pending Review',
       'Approved',
       'Rejected',
+      'Inactive',
       'Eligible',
       'Ready',
       'Active',
@@ -213,6 +215,10 @@ class _VehicleOnboardingPageState extends State<VehicleOnboardingPage> {
         _s(row['readiness_status']),
         review,
         _activityStatus(row),
+        _s(row['active_job_order_id']),
+        _s(row['active_job_status']),
+        _s(row['active_job_type']),
+        _s(row['service_lock_reason']),
       ].join(' ').toLowerCase();
 
       final matchesSearch = query.isEmpty || haystack.contains(query);
@@ -220,6 +226,7 @@ class _VehicleOnboardingPageState extends State<VehicleOnboardingPage> {
         'Pending Review' => review == 'Pending Review',
         'Approved' => review == 'Approved',
         'Rejected' => review == 'Rejected',
+        'Inactive' => _activityStatus(row) == 'Inactive',
         'Eligible' => _s(row['eligibility_status']) == 'Eligible',
         'Ready' => _s(row['readiness_status']) == 'Ready',
         'Active' => _activityStatus(row) == 'Active',
@@ -241,10 +248,12 @@ class _VehicleOnboardingPageState extends State<VehicleOnboardingPage> {
   bool _matchesAdminView(Map<String, dynamic> row) {
     if (!_isAdminMode) return true;
     final review = _reviewStatus(row);
+    final activity = _activityStatus(row);
     return switch (widget.adminView) {
-      AdminVehicleView.approvedOnly => review == 'Approved',
+      AdminVehicleView.approvedOnly =>
+      review == 'Approved' && activity != 'Inactive',
       AdminVehicleView.onboardingQueue =>
-      review == 'Pending Review' || review == 'Rejected',
+      review == 'Pending Review' || review == 'Rejected' || activity == 'Inactive',
       AdminVehicleView.all => true,
     };
   }
@@ -252,6 +261,8 @@ class _VehicleOnboardingPageState extends State<VehicleOnboardingPage> {
   String _activityStatus(Map<String, dynamic> row) {
     final raw = _s(row['vehicle_status']);
     final status = raw.toLowerCase();
+    if (status == 'inactive') return 'Inactive';
+    if (row['has_open_job_order'] == true) return 'Maintenance';
     if (status == 'available' || status == 'active') return 'Active';
     if (status.contains('maint') || status == 'unavail' || status == 'unavailable') {
       return 'Maintenance';
@@ -494,6 +505,14 @@ class _VehicleSummaryCard extends StatelessWidget {
     return int.tryParse(value.toString()) ?? 0;
   }
 
+  String _friendlyDate(String raw) {
+    final value = raw.trim();
+    if (value.isEmpty) return '';
+    final parsed = DateTime.tryParse(value);
+    if (parsed == null) return value;
+    return '${parsed.day}/${parsed.month}/${parsed.year}';
+  }
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
@@ -506,6 +525,11 @@ class _VehicleSummaryCard extends StatelessWidget {
     final readiness = _s(record['readiness_status']).isEmpty ? 'Pending' : _s(record['readiness_status']);
     final review = _s(record['review_status']).isEmpty ? 'Pending Review' : _s(record['review_status']);
     final displayStatus = activityStatus.trim().isEmpty ? 'Pending' : activityStatus.trim();
+    final hasOpenJob = record['has_open_job_order'] == true;
+    final lockReason = _s(record['service_lock_reason']);
+    final activeJobId = _s(record['active_job_order_id']);
+    final activeJobStatus = _s(record['active_job_status']);
+    final scheduledDate = _friendlyDate(_s(record['active_job_preferred_date']));
 
     return AdminCard(
       child: Column(
@@ -614,6 +638,48 @@ class _VehicleSummaryCard extends StatelessWidget {
                     ],
                   ),
                 ),
+                if (hasOpenJob) ...[
+                  const SizedBox(height: 10),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.withOpacity(0.08),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: Colors.orange.withOpacity(0.28)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Under service job order',
+                          style: TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          lockReason.isEmpty
+                              ? 'This vehicle cannot be rented until the linked job order is completed.'
+                              : lockReason,
+                        ),
+                        if (activeJobId.isNotEmpty || activeJobStatus.isNotEmpty || scheduledDate.isNotEmpty) ...[
+                          const SizedBox(height: 6),
+                          Text(
+                            [
+                              if (activeJobId.isNotEmpty) 'Job: $activeJobId',
+                              if (activeJobStatus.isNotEmpty) 'Status: $activeJobStatus',
+                              if (scheduledDate.isNotEmpty) 'Date: $scheduledDate',
+                            ].join('  |  '),
+                            style: TextStyle(
+                              color: cs.onSurfaceVariant,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 12),
                 Row(
                   children: [
@@ -775,6 +841,16 @@ class _EmptyVehiclesCard extends StatelessWidget {
     );
   }
 }
+
+
+
+
+
+
+
+
+
+
 
 
 

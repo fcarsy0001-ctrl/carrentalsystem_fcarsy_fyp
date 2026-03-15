@@ -7,6 +7,28 @@ import 'vehicle_location_admin_page.dart';
 import 'vehicle_location_history_page.dart';
 import 'widgets/admin_ui.dart';
 
+DateTime _toMalaysiaTime(DateTime value) {
+  if (value.isUtc) return value.add(const Duration(hours: 8));
+  return value.subtract(value.timeZoneOffset).add(const Duration(hours: 8));
+}
+
+String _formatLocationTimestamp(dynamic value) {
+  final raw = value == null ? '' : value.toString().trim();
+  if (raw.isEmpty) return 'No updates yet';
+
+  final parsed = DateTime.tryParse(raw);
+  if (parsed == null) return raw.replaceFirst('T', ' ').replaceFirst('Z', '');
+
+  final malaysia = _toMalaysiaTime(parsed);
+  final day = malaysia.day.toString().padLeft(2, '0');
+  final month = malaysia.month.toString().padLeft(2, '0');
+  final hour = malaysia.hour % 12 == 0 ? 12 : malaysia.hour % 12;
+  final minute = malaysia.minute.toString().padLeft(2, '0');
+  final suffix = malaysia.hour >= 12 ? 'PM' : 'AM';
+
+  return '$day/$month/${malaysia.year}, ${hour.toString().padLeft(2, '0')}:$minute $suffix MYT';
+}
+
 class VehicleLocationDashboardPage extends StatefulWidget {
   const VehicleLocationDashboardPage({
     super.key,
@@ -225,7 +247,6 @@ class _VehicleLocationDashboardPageState extends State<VehicleLocationDashboardP
       ],
     );
   }
-
   Widget _buildToolbar(int count) {
     final cs = Theme.of(context).colorScheme;
     return Column(
@@ -474,9 +495,7 @@ class _LocationVehicleCard extends StatelessWidget {
   }
 
   String _lastUpdated() {
-    final raw = _s(record['location_last_updated']);
-    if (raw.isEmpty) return 'No updates yet';
-    return raw.replaceFirst('T', ' ').replaceFirst('Z', '');
+    return _formatLocationTimestamp(record['location_last_updated']);
   }
 
   @override
@@ -559,3 +578,11 @@ class _LocationVehicleCard extends StatelessWidget {
     );
   }
 }
+
+
+
+
+
+
+
+

@@ -15,7 +15,7 @@ import 'staff_admin_page.dart';
 import 'user_management_page.dart';
 import 'vehicle_location_dashboard_page.dart';
 import 'vehicle_onboarding_page.dart';
-import 'vendor_cost_admin_page.dart';
+import 'vendor_admin_module_page.dart';
 
 class AdminShell extends StatefulWidget {
   const AdminShell({super.key, required this.isSuperAdmin});
@@ -65,9 +65,16 @@ class _AdminShellState extends State<AdminShell> {
         ),
       ),
       const _NavItem('Locations', Icons.place_outlined, VehicleLocationDashboardPage(embedded: true)),
-      const _NavItem('Service Jobs', Icons.build_circle_outlined, ServiceJobOrdersPage(embedded: true)),
+      const _NavItem(
+        'Service Jobs',
+        Icons.build_circle_outlined,
+        ServiceJobOrdersPage(
+          embedded: true,
+          allowVendorReassign: false,
+        ),
+      ),
       const _NavItem('Maintenance', Icons.calendar_month_outlined, MaintenanceScheduleAdminPage(embedded: true)),
-      const _NavItem('Vendors & Cost', Icons.inventory_2_outlined, VendorCostAdminPage(embedded: true)),
+      const _NavItem('Vendors & Cost', Icons.inventory_2_outlined, VendorAdminModulePage()),
       const _NavItem('Orders', Icons.receipt_long_outlined, OrderManagementPage()),
       const _NavItem('Reports', Icons.bar_chart_outlined, ReportsAdminPage()),
       const _NavItem('Licences', Icons.badge_outlined, DriverLicenseReviewPage()),
@@ -158,4 +165,6 @@ class _NavItem {
   final IconData icon;
   final Widget page;
 }
+
+
 

@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/analytics_service.dart';
 import '../core/widgets/simple_charts.dart';
+import '../admin/service_job_orders_page.dart';
 import '../admin/vehicle_location_dashboard_page.dart';
 import '../admin/vehicle_onboarding_page.dart';
 import 'reports_leaser_page.dart';
@@ -117,7 +118,7 @@ class _LeaserDashboardPageState extends State<LeaserDashboardPage> {
 
               _Section(
                 title: 'Fleet Tools',
-                subtitle: 'Manage vehicles, track locations, and monitor onboarding progress',
+                subtitle: 'Manage vehicles, track locations, monitor onboarding, and submit service requests',
                 child: Wrap(
                   spacing: 10,
                   runSpacing: 10,
@@ -141,6 +142,21 @@ class _LeaserDashboardPageState extends State<LeaserDashboardPage> {
                       ),
                       icon: const Icon(Icons.place_outlined),
                       label: const Text('Vehicle Locations'),
+                    ),
+                    ElevatedButton.icon(
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => ServiceJobOrdersPage(
+                            leaserId: widget.leaserId,
+                            title: 'Service Jobs',
+                            subtitle: 'Create and track maintenance or inspection requests for your vehicles.',
+                            allowVendorReassign: true,
+                            allowCancelledStatus: false,
+                          ),
+                        ),
+                      ),
+                      icon: const Icon(Icons.build_circle_outlined),
+                      label: const Text('Service Jobs'),
                     ),
                     ElevatedButton.icon(
                       onPressed: () => Navigator.of(context).push(
@@ -264,6 +280,7 @@ class _Section extends StatelessWidget {
     );
   }
 }
+
 
 
 

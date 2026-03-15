@@ -12,9 +12,12 @@ import 'login/account_disabled_page.dart';
 import 'admin/admin_shell.dart';
 import 'services/admin_access_service.dart';
 import 'services/leaser_access_service.dart';
+import 'services/vendor_access_service.dart';
 import 'leaser/leaser_shell.dart';
 import 'leaser/leaser_status_page.dart';
+import 'vendor/vendor_status_page.dart';
 import 'shell/main_shell.dart';
+import 'vendor/vendor_shell.dart';
 
 SupabaseClient get supabase => Supabase.instance.client;
 
@@ -108,7 +111,7 @@ class _MyAppState extends State<MyApp> {
         host == 'login-callback' || segments.contains('login-callback');
 
 
-    // ✅ Google OAuth callback deep link
+    // âœ… Google OAuth callback deep link
     if (isLoginCallback) {
       try {
         await _supa.auth.getSessionFromUrl(uri);
@@ -117,19 +120,19 @@ class _MyAppState extends State<MyApp> {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         navKey.currentState?.pushAndRemoveUntil(
           MaterialPageRoute(builder: (_) => const AuthWrapper()),
-          (route) => false,
+              (route) => false,
         );
       });
       return;
     }
 
-    // ✅ Password reset deep link
+    // âœ… Password reset deep link
     if (isResetPassword) {
       final tokenHash = uri.queryParameters['token_hash'];
 
       try {
         if (tokenHash != null && tokenHash.isNotEmpty) {
-          // ✅ gotrue 2.18.0 uses verifyOTP (capital OTP)
+          // âœ… gotrue 2.18.0 uses verifyOTP (capital OTP)
           await _supa.auth.verifyOTP(
             type: OtpType.recovery,
             tokenHash: tokenHash,
@@ -149,7 +152,7 @@ class _MyAppState extends State<MyApp> {
       return;
     }
 
-    // ✅ Your custom verify link (optional - keep if you use it)
+    // âœ… Your custom verify link (optional - keep if you use it)
     if (isVerify) {
       final token = uri.queryParameters['token'];
       if (token == null || token.isEmpty) return;
@@ -253,6 +256,15 @@ class _RoleGate extends StatelessWidget {
               remark: r.leaserRemark,
               leaserId: r.leaserId,
             );
+          case _GateKind.vendorPending:
+            return const VendorStatusPage(status: VendorStatus.pending);
+          case _GateKind.vendorRejected:
+            return VendorStatusPage(
+              status: VendorStatus.rejected,
+              remark: r.vendorRemark,
+            );
+          case _GateKind.vendor:
+            return VendorShell(vendorId: r.vendorId);
           case _GateKind.disabled:
             return AccountDisabledPage(message: r.disabledMessage ?? 'Your account has been deactivated. Please contact admin.');
           case _GateKind.user:
@@ -261,6 +273,27 @@ class _RoleGate extends StatelessWidget {
         }
       },
     );
+  }
+
+  String _vendorStateName(dynamic vendor) {
+    try {
+      final raw = vendor.state?.toString() ?? '';
+      final value = raw.contains('.') ? raw.split('.').last : raw;
+      return value.toString().trim().toLowerCase();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  String? _vendorRemark(dynamic vendor) {
+    try {
+      final value = vendor.remark;
+      if (value == null) return null;
+      final text = value.toString().trim();
+      return text.isEmpty ? null : text;
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<_GateResult> _compute() async {
@@ -354,21 +387,60 @@ class _RoleGate extends StatelessWidget {
       return _GateResult.leaserPending();
     }
 
-    
+
 // 2b) Leaser by table existence (legacy accounts)
-final leaser2 = await LeaserAccessService(client).getLeaserContext();
-if (leaser2.isLeaser) {
-  if (leaser2.state == LeaserState.disabled) {
-    return _GateResult.disabled('Your leaser account has been deactivated. Please contact admin.');
-  }
-  if (leaser2.state == LeaserState.approved) {
-    return _GateResult.leaserApproved(leaser2.leaserId ?? userId);
-  }
-  if (leaser2.state == LeaserState.rejected) {
-    return _GateResult.leaserRejected(leaser2.remark, leaserId: leaser2.leaserId);
-  }
-  return _GateResult.leaserPending();
-}
+    final leaser2 = await LeaserAccessService(client).getLeaserContext();
+    if (leaser2.isLeaser) {
+      if (leaser2.state == LeaserState.disabled) {
+        return _GateResult.disabled('Your leaser account has been deactivated. Please contact admin.');
+      }
+      if (leaser2.state == LeaserState.approved) {
+        return _GateResult.leaserApproved(leaser2.leaserId ?? userId);
+      }
+      if (leaser2.state == LeaserState.rejected) {
+        return _GateResult.leaserRejected(leaser2.remark, leaserId: leaser2.leaserId);
+      }
+      return _GateResult.leaserPending();
+    }
+
+    // 2c) Vendor routing
+    final isVendorRole = role == 'vendor';
+    if (isVendorRole) {
+      if (userStatus.trim().toLowerCase() != 'active') {
+        return _GateResult.disabled('Your account has been deactivated. Please contact admin.');
+      }
+
+      final vendor = await VendorAccessService(client).getVendorContext();
+      final vendorState = _vendorStateName(vendor);
+      if (!vendor.isVendor) {
+        return _GateResult.vendorPending();
+      }
+      if (vendorState == 'inactive') {
+        return _GateResult.disabled('Your vendor account has been deactivated. Please contact admin.');
+      }
+      if (vendorState == 'rejected') {
+        return _GateResult.vendorRejected(_vendorRemark(vendor));
+      }
+      if (vendorState == 'approved' || vendorState == 'active') {
+        return _GateResult.vendor(vendor.vendorId);
+      }
+      return _GateResult.vendorPending();
+    }
+
+    final vendor2 = await VendorAccessService(client).getVendorContext();
+    if (vendor2.isVendor) {
+      final vendorState = _vendorStateName(vendor2);
+      if (vendorState == 'inactive') {
+        return _GateResult.disabled('Your vendor account has been deactivated. Please contact admin.');
+      }
+      if (vendorState == 'rejected') {
+        return _GateResult.vendorRejected(_vendorRemark(vendor2));
+      }
+      if (vendorState == 'approved' || vendorState == 'active') {
+        return _GateResult.vendor(vendor2.vendorId);
+      }
+      return _GateResult.vendorPending();
+    }
 
 // 3) Normal user
     // If we successfully read app_user and status is not Active, block access.
@@ -386,23 +458,30 @@ enum _GateKind {
   leaserApproved,
   leaserPending,
   leaserRejected,
+  vendorPending,
+  vendorRejected,
+  vendor,
   disabled,
 }
 
 
 class _GateResult {
   const _GateResult._(
-    this.kind, {
-    this.isSuperAdmin = false,
-    this.leaserId,
-    this.leaserRemark,
-    this.disabledMessage,
-  });
+      this.kind, {
+        this.isSuperAdmin = false,
+        this.leaserId,
+        this.leaserRemark,
+        this.vendorId,
+        this.vendorRemark,
+        this.disabledMessage,
+      });
 
   final _GateKind kind;
   final bool isSuperAdmin;
   final String? leaserId;
   final String? leaserRemark;
+  final String? vendorId;
+  final String? vendorRemark;
   final String? disabledMessage;
 
   factory _GateResult.user() => const _GateResult._(_GateKind.user);
@@ -418,6 +497,20 @@ class _GateResult {
   factory _GateResult.leaserRejected(String? remark, {String? leaserId}) =>
       _GateResult._(_GateKind.leaserRejected, leaserId: leaserId, leaserRemark: remark);
 
+  factory _GateResult.vendorPending() => const _GateResult._(_GateKind.vendorPending);
+
+  factory _GateResult.vendorRejected(String? remark) =>
+      _GateResult._(_GateKind.vendorRejected, vendorRemark: remark);
+
+  factory _GateResult.vendor(String? vendorId) =>
+      _GateResult._(_GateKind.vendor, vendorId: vendorId);
+
   factory _GateResult.disabled(String message) =>
       _GateResult._(_GateKind.disabled, disabledMessage: message);
 }
+
+
+
+
+
+

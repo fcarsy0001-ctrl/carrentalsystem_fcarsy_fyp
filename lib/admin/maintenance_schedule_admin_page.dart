@@ -18,6 +18,7 @@ class _MaintenanceScheduleAdminPageState extends State<MaintenanceScheduleAdminP
 
   late final FleetAdminService _service;
   late Future<_MaintenanceBundle> _future;
+  DateTime _visibleMonth = DateTime(DateTime.now().year, DateTime.now().month, 1);
 
   @override
   void initState() {
@@ -37,7 +38,9 @@ class _MaintenanceScheduleAdminPageState extends State<MaintenanceScheduleAdminP
   }
 
   Future<void> _refresh() async {
-    setState(() => _future = _load());
+    setState(() {
+      _future = _load();
+    });
     await _future;
   }
 
@@ -96,6 +99,414 @@ class _MaintenanceScheduleAdminPageState extends State<MaintenanceScheduleAdminP
     }
   }
 
+  DateTime? _scheduleDate(Map<String, dynamic> schedule) {
+    return parseDate(schedule['next_maintenance_date']) ?? parseDate(schedule['trigger_date']);
+  }
+
+  String _calendarStatus(Map<String, dynamic> schedule) {
+    final raw = (schedule['schedule_status'] ?? '').toString().trim();
+    final normalized = raw.toLowerCase();
+    if (normalized == 'in progress') return 'In Progress';
+    if (normalized == 'completed') return 'Completed';
+    if (normalized == 'overdue') return 'Overdue';
+    if (normalized == 'cancelled') return 'Cancelled';
+
+    final date = _scheduleDate(schedule);
+    if (date != null) {
+      final due = DateTime(date.year, date.month, date.day);
+      final now = DateTime.now();
+      final today = DateTime(now.year, now.month, now.day);
+      if (due.isBefore(today)) return 'Overdue';
+    }
+    return 'Scheduled';
+  }
+
+  String _monthLabel(DateTime month) {
+    const months = [
+      'January',
+      'February',
+      'March',
+      'April',
+      'May',
+      'June',
+      'July',
+      'August',
+      'September',
+      'October',
+      'November',
+      'December',
+    ];
+    return months[month.month - 1] + ' ' + month.year.toString();
+  }
+
+  Color _calendarStatusColor(String status) {
+    switch (status) {
+      case 'Scheduled':
+        return Colors.blue;
+      case 'In Progress':
+        return Colors.orange;
+      case 'Completed':
+        return Colors.green;
+      case 'Overdue':
+        return Colors.red;
+      default:
+        return Colors.grey;
+    }
+  }
+
+  String _scheduleVehicleLabel(Map<String, dynamic>? vehicle, Map<String, dynamic> schedule) {
+    final plate = (vehicle?['vehicle_plate_no'] ?? '').toString().trim();
+    if (plate.isNotEmpty) return plate;
+    return (schedule['vehicle_id'] ?? '-').toString();
+  }
+
+  String _s(dynamic value) => value == null ? '' : value.toString().trim();
+
+  void _changeMonth(int offset) {
+    setState(() {
+      _visibleMonth = DateTime(_visibleMonth.year, _visibleMonth.month + offset, 1);
+    });
+  }
+
+  Widget _buildSummaryTile(String label, int value, Color color) {
+    return Container(
+      width: 158,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(16),
+        color: color.withOpacity(0.08),
+        border: Border.all(color: color.withOpacity(0.28)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              color: color,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            value.toString(),
+            style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w900),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showDayScheduleDetails(
+      DateTime date,
+      List<_CalendarScheduleEntry> entries,
+      ) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 18, 16, 24),
+            child: ListView(
+              shrinkWrap: true,
+              children: [
+                Text(
+                  'Maintenance on ${date.day}/${date.month}/${date.year}',
+                  style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '${entries.length} scheduled item${entries.length == 1 ? '' : 's'}',
+                  style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+                ),
+                const SizedBox(height: 16),
+                ...entries.map(
+                      (entry) => Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: AdminCard(
+                      child: Padding(
+                        padding: const EdgeInsets.all(14),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    entry.scheduleType,
+                                    style: const TextStyle(fontWeight: FontWeight.w800),
+                                  ),
+                                ),
+                                AdminStatusChip(status: entry.status),
+                              ],
+                            ),
+                            const SizedBox(height: 10),
+                            _DetailLine(label: 'Schedule ID', value: entry.scheduleId.isEmpty ? '-' : entry.scheduleId),
+                            _DetailLine(label: 'Vehicle', value: entry.label),
+                            _DetailLine(label: 'Vendor', value: entry.vendorLabel.isEmpty ? 'Not assigned' : entry.vendorLabel),
+                            _DetailLine(label: 'Date', value: entry.dateLabel),
+                            if (entry.notes.isNotEmpty) ...[
+                              const SizedBox(height: 8),
+                              Text(
+                                'Notes',
+                                style: TextStyle(
+                                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(entry.notes),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildCalendarSection(
+      _MaintenanceBundle bundle,
+      Map<String, Map<String, dynamic>> vehicleMap,
+      Map<String, Map<String, dynamic>> vendorMap,
+      ) {
+    final entries = <_CalendarScheduleEntry>[];
+    for (final schedule in bundle.schedules) {
+      final date = _scheduleDate(schedule);
+      if (date == null) continue;
+      final vehicle = vehicleMap[(schedule['vehicle_id'] ?? '').toString()];
+      final vendor = vendorMap[(schedule['vendor_id'] ?? '').toString()];
+      entries.add(
+        _CalendarScheduleEntry(
+          date: DateTime(date.year, date.month, date.day),
+          label: _scheduleVehicleLabel(vehicle, schedule),
+          status: _calendarStatus(schedule),
+          scheduleId: _s(schedule['schedule_id']),
+          scheduleType: _s(schedule['schedule_type']).isEmpty ? 'Maintenance Schedule' : _s(schedule['schedule_type']),
+          vendorLabel: _service.vendorLabel(vendor),
+          dateLabel: dateText(date),
+          notes: _s(schedule['notes']),
+        ),
+      );
+    }
+
+    final scheduledCount = bundle.schedules.where((schedule) => _calendarStatus(schedule) == 'Scheduled').length;
+    final inProgressCount = bundle.schedules.where((schedule) => _calendarStatus(schedule) == 'In Progress').length;
+    final completedCount = bundle.schedules.where((schedule) => _calendarStatus(schedule) == 'Completed').length;
+    final overdueCount = bundle.schedules.where((schedule) => _calendarStatus(schedule) == 'Overdue').length;
+
+    final visibleEntries = entries
+        .where((entry) => entry.date.year == _visibleMonth.year && entry.date.month == _visibleMonth.month)
+        .toList();
+    final byDay = <int, List<_CalendarScheduleEntry>>{};
+    for (final entry in visibleEntries) {
+      byDay.putIfAbsent(entry.date.day, () => <_CalendarScheduleEntry>[]).add(entry);
+    }
+
+    final firstDay = DateTime(_visibleMonth.year, _visibleMonth.month, 1);
+    final daysInMonth = DateTime(_visibleMonth.year, _visibleMonth.month + 1, 0).day;
+    final leadingBlank = firstDay.weekday % 7;
+    final totalCells = leadingBlank + daysInMonth;
+    final trailingBlank = totalCells % 7 == 0 ? 0 : 7 - (totalCells % 7);
+    final cellCount = totalCells + trailingBlank;
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: [
+            _buildSummaryTile('Scheduled', scheduledCount, Colors.blue),
+            _buildSummaryTile('In Progress', inProgressCount, Colors.orange),
+            _buildSummaryTile('Completed', completedCount, Colors.green),
+            _buildSummaryTile('Overdue', overdueCount, Colors.red),
+          ],
+        ),
+        const SizedBox(height: 14),
+        AdminCard(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    IconButton(
+                      onPressed: () => _changeMonth(-1),
+                      icon: const Icon(Icons.chevron_left_rounded),
+                    ),
+                    Expanded(
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.calendar_month_outlined, size: 18),
+                          const SizedBox(width: 8),
+                          Text(
+                            _monthLabel(_visibleMonth),
+                            style: const TextStyle(fontWeight: FontWeight.w900),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => _changeMonth(1),
+                      icon: const Icon(Icons.chevron_right_rounded),
+                    ),
+                  ],
+                ),
+                const Divider(height: 24),
+                Row(
+                  children: const [
+                    Expanded(child: Center(child: Text('Sun', style: TextStyle(fontWeight: FontWeight.w700)))),
+                    Expanded(child: Center(child: Text('Mon', style: TextStyle(fontWeight: FontWeight.w700)))),
+                    Expanded(child: Center(child: Text('Tue', style: TextStyle(fontWeight: FontWeight.w700)))),
+                    Expanded(child: Center(child: Text('Wed', style: TextStyle(fontWeight: FontWeight.w700)))),
+                    Expanded(child: Center(child: Text('Thu', style: TextStyle(fontWeight: FontWeight.w700)))),
+                    Expanded(child: Center(child: Text('Fri', style: TextStyle(fontWeight: FontWeight.w700)))),
+                    Expanded(child: Center(child: Text('Sat', style: TextStyle(fontWeight: FontWeight.w700)))),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                GridView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: cellCount,
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 7,
+                    mainAxisExtent: 64,
+                    mainAxisSpacing: 6,
+                    crossAxisSpacing: 6,
+                  ),
+                  itemBuilder: (context, index) {
+                    final dayNumber = index - leadingBlank + 1;
+                    if (dayNumber <= 0 || dayNumber > daysInMonth) {
+                      return Container(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+                        ),
+                      );
+                    }
+
+                    final dayEntries = byDay[dayNumber] ?? const <_CalendarScheduleEntry>[];
+                    final isToday = today.year == _visibleMonth.year &&
+                        today.month == _visibleMonth.month &&
+                        today.day == dayNumber;
+                    final previewText = dayEntries.isEmpty
+                        ? ''
+                        : (dayEntries.length == 1 ? dayEntries.first.label : '${dayEntries.length} schedules');
+                    final previewColor = dayEntries.isEmpty ? Colors.transparent : _calendarStatusColor(dayEntries.first.status);
+
+                    return Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(12),
+                        onTap: dayEntries.isEmpty
+                            ? null
+                            : () => _showDayScheduleDetails(
+                          DateTime(_visibleMonth.year, _visibleMonth.month, dayNumber),
+                          dayEntries,
+                        ),
+                        child: Container(
+                          padding: const EdgeInsets.all(6),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: isToday
+                                  ? Theme.of(context).colorScheme.primary
+                                  : Theme.of(context).colorScheme.outlineVariant,
+                            ),
+                            color: isToday
+                                ? Theme.of(context).colorScheme.primaryContainer.withOpacity(0.16)
+                                : null,
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      dayNumber.toString(),
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w800,
+                                        color: isToday ? Theme.of(context).colorScheme.primary : null,
+                                      ),
+                                    ),
+                                  ),
+                                  if (dayEntries.isNotEmpty)
+                                    Container(
+                                      width: 8,
+                                      height: 8,
+                                      decoration: BoxDecoration(
+                                        color: previewColor,
+                                        shape: BoxShape.circle,
+                                      ),
+                                    ),
+                                ],
+                              ),
+                              if (dayEntries.isNotEmpty) ...[
+                                const SizedBox(height: 6),
+                                Container(
+                                  width: double.infinity,
+                                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(999),
+                                    color: previewColor.withOpacity(0.14),
+                                  ),
+                                  child: Text(
+                                    previewText,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: previewColor,
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 9,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 14),
+        AdminCard(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Wrap(
+              spacing: 16,
+              runSpacing: 10,
+              children: const [
+                _LegendItem(label: 'Scheduled', color: Colors.blue),
+                _LegendItem(label: 'In Progress', color: Colors.orange),
+                _LegendItem(label: 'Completed', color: Colors.green),
+                _LegendItem(label: 'Overdue', color: Colors.red),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 14),
+      ],
+    );
+  }
   Widget _buildBody() {
     return FutureBuilder<_MaintenanceBundle>(
       future: _future,
@@ -120,60 +531,7 @@ class _MaintenanceScheduleAdminPageState extends State<MaintenanceScheduleAdminP
           child: ListView(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
             children: [
-              if (bundle.schedules.isEmpty)
-                const _MaintenanceEmptyCard(
-                  message: 'No maintenance schedules yet. Create recurring maintenance reminders for your fleet here.',
-                )
-              else
-                ...bundle.schedules.map((schedule) {
-                  final scheduleId = (schedule['schedule_id'] ?? '').toString();
-                  final vehicle = vehicleMap[(schedule['vehicle_id'] ?? '').toString()];
-                  final vendor = vendorMap[(schedule['vendor_id'] ?? '').toString()];
-                  final triggerMileage = widgetText(schedule['trigger_mileage']);
-                  final triggerDate = dateText(schedule['trigger_date']);
-                  final nextDate = dateText(schedule['next_maintenance_date']);
-
-                  return Padding(
-                    padding: const EdgeInsets.only(bottom: 10),
-                    child: AdminCard(
-                      child: ListTile(
-                        title: Text(
-                          (schedule['schedule_type'] ?? 'Maintenance Schedule').toString(),
-                          style: const TextStyle(fontWeight: FontWeight.w800),
-                        ),
-                        subtitle: Text(
-                          'ID: $scheduleId\n'
-                              'Vehicle: ${_service.vehicleLabel(vehicle)}\n'
-                              'Vendor: ${_service.vendorLabel(vendor)}\n'
-                              'Trigger mileage: $triggerMileage  |  Trigger date: $triggerDate\n'
-                              'Next maintenance: $nextDate',
-                        ),
-                        isThreeLine: true,
-                        trailing: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            AdminStatusChip(status: (schedule['schedule_status'] ?? '-').toString()),
-                            PopupMenuButton<String>(
-                              onSelected: (value) {
-                                if (value == 'edit') {
-                                  _openUpsert(bundle, initial: schedule);
-                                }
-                                if (value == 'delete') {
-                                  _delete(scheduleId);
-                                }
-                              },
-                              itemBuilder: (_) => const [
-                                PopupMenuItem(value: 'edit', child: Text('Edit')),
-                                PopupMenuItem(value: 'delete', child: Text('Delete')),
-                              ],
-                            ),
-                          ],
-                        ),
-                        onTap: () => _openUpsert(bundle, initial: schedule),
-                      ),
-                    ),
-                  );
-                }),
+              _buildCalendarSection(bundle, vehicleMap, vendorMap),
             ],
           ),
         );
@@ -252,6 +610,86 @@ class _MaintenanceBundle {
   final List<Map<String, dynamic>> schedules;
   final List<Map<String, dynamic>> vehicles;
   final List<Map<String, dynamic>> vendors;
+}
+
+class _CalendarScheduleEntry {
+  const _CalendarScheduleEntry({
+    required this.date,
+    required this.label,
+    required this.status,
+    required this.scheduleId,
+    required this.scheduleType,
+    required this.vendorLabel,
+    required this.dateLabel,
+    required this.notes,
+  });
+
+  final DateTime date;
+  final String label;
+  final String status;
+  final String scheduleId;
+  final String scheduleType;
+  final String vendorLabel;
+  final String dateLabel;
+  final String notes;
+}
+
+class _DetailLine extends StatelessWidget {
+  const _DetailLine({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 118,
+            child: Text(
+              label,
+              style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+class _LegendItem extends StatelessWidget {
+  const _LegendItem({required this.label, required this.color});
+
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 10,
+          height: 10,
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+          ),
+        ),
+        const SizedBox(width: 8),
+        Text(label),
+      ],
+    );
+  }
 }
 
 class _ScheduleFormPage extends StatefulWidget {
@@ -564,3 +1002,12 @@ String dateText(dynamic raw) {
   if (value == null) return '-';
   return '${value.day}/${value.month}/${value.year}';
 }
+
+
+
+
+
+
+
+
+

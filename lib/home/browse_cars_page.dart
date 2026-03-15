@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../config/supabase_config.dart';
+import '../services/rentable_vehicle_service.dart';
 import 'product_page.dart';
-
 /// Browse cars page:
 /// - AppBar with back button
 /// - Search bar
@@ -56,24 +56,18 @@ class _BrowseCarsPageState extends State<BrowseCarsPage> {
 
   Future<List<_Vehicle>> _load() async {
     final q = _searchCtrl.text.trim();
+    final rentableService = RentableVehicleService(_supa);
+    final activeLocations = await rentableService.fetchActiveLocationNames();
 
-    // IMPORTANT: Don't call `.order()` before applying filters.
-    // `.order()` returns a TransformBuilder which doesn't expose filter methods
-    // like `.or()`, `.ilike()`, `.eq()`, `.gte()`, `.lte()`.
-    // Build filters first, then order right before awaiting.
-    // Use select('*') so the app keeps working even if you add new columns later
-    // (e.g. fuel_percent, vehicle_color).
     var builder = _supa.from('vehicle').select('*');
 
-    // Search
     if (q.isNotEmpty) {
       final safe = q.replaceAll(',', ' ');
       builder = builder.or(
-        'vehicle_brand.ilike.%$safe%,vehicle_model.ilike.%$safe%,vehicle_location.ilike.%$safe%,vehicle_type.ilike.%$safe%'
+          'vehicle_brand.ilike.%$safe%,vehicle_model.ilike.%$safe%,vehicle_location.ilike.%$safe%,vehicle_type.ilike.%$safe%'
       );
     }
 
-    // Filters
     if ((_area ?? '').trim().isNotEmpty) {
       builder = builder.ilike('vehicle_location', '%${_area!.trim()}%');
     }
@@ -93,17 +87,18 @@ class _BrowseCarsPageState extends State<BrowseCarsPage> {
       builder = builder.lte('daily_rate', _priceTo!);
     }
 
-    // Default: show available if no status filter provided
     if ((_status ?? '').trim().isEmpty) {
       builder = builder.eq('vehicle_status', 'Available');
     }
 
     final rows = await builder.order('vehicle_id', ascending: false);
-    var vehicles = (rows as List)
-        .map((e) => _Vehicle.fromMap(Map<String, dynamic>.from(e as Map)))
+    final filteredRows = (rows as List)
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .where((row) => rentableService.isInActiveBranch(row, activeLocations))
         .toList();
 
-    // Date availability filtering (exclude cars that have overlapping bookings)
+    var vehicles = filteredRows.map(_Vehicle.fromMap).toList();
+
     final sdt = _startDT;
     final edt = _endDT;
     if (sdt != null && edt != null) {
@@ -125,7 +120,6 @@ class _BrowseCarsPageState extends State<BrowseCarsPage> {
           vehicles = vehicles.where((v) => !bookedIds.contains(v.vehicleId)).toList();
         }
       } catch (_) {
-        // If booking table / RLS policy isn't ready, ignore filtering.
       }
     }
 
@@ -303,20 +297,19 @@ class _BrowseCarsPageState extends State<BrowseCarsPage> {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => ProductPage(
-          carName: v.title,
-          priceText: v.dailyRate > 0 ? 'RM${v.dailyRate.toStringAsFixed(0)}/day' : 'RM6/hour',
-          imageUrl: _vehiclePhotoPublicUrl(v.photoPath),
-          fuelType: v.fuel,
-          fuelPercent: v.fuelPercent,
-          productLocation: _shortOutletLabel(v.location),
-          startDateTime: _startDT,
-          endDateTime: _endDT,
-          address: v.location,
-          carType: v.type,
-          seatCapacity: v.seats,
+          vehicleId: v.vehicleId,
+          brand: v.brand,
+          model: v.model,
+          type: v.type,
+          plate: v.plate,
           transmission: v.transmission,
+          fuelType: v.fuel,
+          seats: v.seats,
+          dailyRate: v.dailyRate,
+          location: v.location,
+          photoUrl: _vehiclePhotoPublicUrl(v.photoPath),
+          fuelPercent: v.fuelPercent,
           color: v.color,
-          plateNo: v.plate,
         ),
       ),
     );
@@ -385,14 +378,14 @@ class _BrowseCarsPageState extends State<BrowseCarsPage> {
                   children: vehicles
                       .map(
                         (v) => Padding(
-                          padding: const EdgeInsets.only(bottom: 12),
-                          child: _BrowseVehicleCard(
-                            vehicle: v,
-                            photoUrl: _vehiclePhotoPublicUrl(v.photoPath),
-                            onTap: () => _openProduct(v),
-                          ),
-                        ),
-                      )
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: _BrowseVehicleCard(
+                        vehicle: v,
+                        photoUrl: _vehiclePhotoPublicUrl(v.photoPath),
+                        onTap: () => _openProduct(v),
+                      ),
+                    ),
+                  )
                       .toList(),
                 );
               },
@@ -504,7 +497,7 @@ class _SearchBar extends StatelessWidget {
             child: TextField(
               controller: controller,
               decoration: const InputDecoration(
-                hintText: 'Search by model, location, type…',
+                hintText: 'Search by model, location, typeÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦',
                 isDense: true,
                 border: InputBorder.none,
               ),
@@ -547,19 +540,19 @@ class _BrowseVehicleCard extends StatelessWidget {
               height: 92,
               child: photoUrl == null
                   ? Container(
-                      color: cs.surfaceContainerHighest,
-                      alignment: Alignment.center,
-                      child: const Icon(Icons.directions_car_rounded, size: 34),
-                    )
+                color: cs.surfaceContainerHighest,
+                alignment: Alignment.center,
+                child: const Icon(Icons.directions_car_rounded, size: 34),
+              )
                   : Image.network(
-                      photoUrl!,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => Container(
-                        color: cs.surfaceContainerHighest,
-                        alignment: Alignment.center,
-                        child: const Icon(Icons.image_not_supported_outlined),
-                      ),
-                    ),
+                photoUrl!,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => Container(
+                  color: cs.surfaceContainerHighest,
+                  alignment: Alignment.center,
+                  child: const Icon(Icons.image_not_supported_outlined),
+                ),
+              ),
             ),
             Expanded(
               child: Padding(
@@ -575,7 +568,7 @@ class _BrowseVehicleCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      '${vehicle.type} • ${vehicle.seats <= 0 ? '-' : vehicle.seats} seats',
+                      '${vehicle.type} ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ ${vehicle.seats <= 0 ? '-' : vehicle.seats} seats',
                       style: TextStyle(color: Colors.grey.shade700),
                     ),
                     const SizedBox(height: 6),

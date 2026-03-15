@@ -27,6 +27,23 @@ class _UpdateVehicleLocationPageState extends State<UpdateVehicleLocationPage> {
 
   String _s(dynamic value) => value == null ? '' : value.toString().trim();
 
+  String _formatTimestamp(dynamic value) {
+    final raw = _s(value);
+    if (raw.isEmpty) return 'No updates yet';
+
+    final parsed = DateTime.tryParse(raw);
+    if (parsed == null) return raw.replaceFirst('T', ' ').replaceFirst('Z', '');
+
+    final local = parsed.toLocal();
+    final day = local.day.toString().padLeft(2, '0');
+    final month = local.month.toString().padLeft(2, '0');
+    final hour = local.hour % 12 == 0 ? 12 : local.hour % 12;
+    final minute = local.minute.toString().padLeft(2, '0');
+    final suffix = local.hour >= 12 ? 'PM' : 'AM';
+
+    return '$day/$month/${local.year}, ${hour.toString().padLeft(2, '0')}:$minute $suffix';
+  }
+
   @override
   void initState() {
     super.initState();
@@ -148,7 +165,7 @@ class _UpdateVehicleLocationPageState extends State<UpdateVehicleLocationPage> {
                     Text('Last Updated', style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w700)),
                     const SizedBox(height: 4),
                     Text(
-                      _s(widget.record['location_last_updated']).isEmpty ? 'No updates yet' : _s(widget.record['location_last_updated']).replaceFirst('T', ' ').replaceFirst('Z', ''),
+                      _formatTimestamp(widget.record['location_last_updated']),
                       style: const TextStyle(fontWeight: FontWeight.w800),
                     ),
                   ],
@@ -266,4 +283,6 @@ class _InfoPill extends StatelessWidget {
     );
   }
 }
+
+
 

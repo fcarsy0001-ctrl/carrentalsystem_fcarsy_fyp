@@ -1,4 +1,4 @@
-import 'dart:math' as math;
+﻿import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -7,22 +7,50 @@ import '../services/driver_license_service.dart';
 import 'booking_page.dart';
 
 class ProductPage extends StatefulWidget {
-  const ProductPage({
+  ProductPage({
     super.key,
-    required this.vehicleId,
-    required this.brand,
-    required this.model,
-    required this.type,
-    required this.plate,
-    required this.transmission,
-    required this.fuelType,
-    required this.seats,
-    required this.dailyRate,
-    required this.location,
-    this.photoUrl,
-    this.fuelPercent,
-    this.color,
-  });
+    String? vehicleId,
+    String? brand,
+    String? model,
+    String? type,
+    String? plate,
+    String? transmission,
+    String? fuelType,
+    int? seats,
+    double? dailyRate,
+    String? location,
+    String? photoUrl,
+    int? fuelPercent,
+    String? color,
+    String? carName,
+    String? priceText,
+    String? imageUrl,
+    String? productLocation,
+    DateTime? startDateTime,
+    DateTime? endDateTime,
+    String? address,
+    String? carType,
+    int? seatCapacity,
+    String? plateNo,
+  })  : vehicleId = _resolveVehicleId(vehicleId: vehicleId, plateNo: plateNo),
+        brand = _resolveBrand(brand: brand, carName: carName),
+        model = _resolveModel(model: model, carName: carName),
+        type = _firstNonEmpty(type, second: carType, fallback: 'Vehicle'),
+        plate = _firstNonEmpty(plate, second: plateNo, fallback: '-'),
+        transmission = _firstNonEmpty(transmission, fallback: 'Auto'),
+        fuelType = _firstNonEmpty(fuelType, fallback: 'Petrol'),
+        seats = seats ?? seatCapacity ?? 4,
+        dailyRate = dailyRate ?? _parseDailyRate(priceText),
+        location = _resolveLocation(
+          location: location,
+          address: address,
+          productLocation: productLocation,
+        ),
+        photoUrl = _firstNonEmptyOrNull(photoUrl, imageUrl),
+        fuelPercent = fuelPercent,
+        color = _firstNonEmptyOrNull(color),
+        initialStartDateTime = startDateTime,
+        initialEndDateTime = endDateTime;
 
   final String vehicleId;
   final String brand;
@@ -37,6 +65,64 @@ class ProductPage extends StatefulWidget {
   final String? photoUrl;
   final int? fuelPercent; // optional DB column
   final String? color; // optional DB column
+  final DateTime? initialStartDateTime;
+  final DateTime? initialEndDateTime;
+
+  static String _clean(String? value) => value?.trim() ?? '';
+
+  static String _firstNonEmpty(String? first, {String? second, String fallback = ''}) {
+    final a = _clean(first);
+    if (a.isNotEmpty) return a;
+    final b = _clean(second);
+    if (b.isNotEmpty) return b;
+    return fallback;
+  }
+
+  static String? _firstNonEmptyOrNull([String? first, String? second]) {
+    final value = _firstNonEmpty(first, second: second);
+    return value.isEmpty ? null : value;
+  }
+
+  static List<String> _splitCarName(String? carName) {
+    final raw = _clean(carName);
+    if (raw.isEmpty) return const ['', ''];
+    final parts = raw.split(RegExp(r'\s+'));
+    if (parts.length == 1) return [parts.first, ''];
+    return [parts.first, parts.skip(1).join(' ')];
+  }
+
+  static String _resolveVehicleId({String? vehicleId, String? plateNo}) {
+    return _firstNonEmpty(vehicleId, second: plateNo, fallback: 'vehicle');
+  }
+
+  static String _resolveBrand({String? brand, String? carName}) {
+    final direct = _clean(brand);
+    if (direct.isNotEmpty) return direct;
+    return _splitCarName(carName).first;
+  }
+
+  static String _resolveModel({String? model, String? carName}) {
+    final direct = _clean(model);
+    if (direct.isNotEmpty) return direct;
+    return _splitCarName(carName).last;
+  }
+
+  static String _resolveLocation({
+    String? location,
+    String? address,
+    String? productLocation,
+  }) {
+    return _firstNonEmpty(location, second: address, fallback: _clean(productLocation));
+  }
+
+  static double _parseDailyRate(String? priceText) {
+    final raw = _clean(priceText).toLowerCase();
+    if (raw.isEmpty) return 0;
+    final match = RegExp(r'(\d+(?:\.\d+)?)').firstMatch(raw);
+    final amount = double.tryParse(match?.group(1) ?? '') ?? 0;
+    if (raw.contains('/hour')) return amount * 24;
+    return amount;
+  }
 
   String get carName {
     final t = ('$brand $model').trim();
@@ -52,6 +138,13 @@ class _ProductPageState extends State<ProductPage> {
 
   DateTime? _start;
   DateTime? _end;
+
+  @override
+  void initState() {
+    super.initState();
+    _start = widget.initialStartDateTime;
+    _end = widget.initialEndDateTime;
+  }
 
   // Pricing
   // Service fee = RM10 (base) + percentage (tiered by subtotal)
@@ -313,7 +406,7 @@ class _ProductPageState extends State<ProductPage> {
                         children: [
                           Expanded(
                             child: Text(
-                              'RM${widget.dailyRate.toStringAsFixed(0)} ÷ 24 = RM${hourlyRate.toStringAsFixed(2)}/hr',
+                              'RM${widget.dailyRate.toStringAsFixed(0)} Ã· 24 = RM${hourlyRate.toStringAsFixed(2)}/hr',
                               style: const TextStyle(fontWeight: FontWeight.w800),
                             ),
                           ),
@@ -333,7 +426,7 @@ class _ProductPageState extends State<ProductPage> {
                             ),
                           ),
                           Text(
-                            '× RM${hourlyRate.toStringAsFixed(2)}',
+                            'Ã— RM${hourlyRate.toStringAsFixed(2)}',
                             style: TextStyle(color: Colors.grey.shade700),
                           ),
                         ],
@@ -587,3 +680,5 @@ class _DetailTile extends StatelessWidget {
     );
   }
 }
+
+

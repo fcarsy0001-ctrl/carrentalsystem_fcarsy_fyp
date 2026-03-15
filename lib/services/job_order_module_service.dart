@@ -8,8 +8,11 @@ class JobOrderModuleService {
   final SupabaseClient _client;
 
   static const String attachmentBucket = 'job_order_files';
-  static const String sqlPatchFile = 'supabase/job_order_chapter4_patch.sql';
-  static const String setupHint = 'Run the SQL in supabase/job_order_chapter4_patch.sql to create the Job Order tables, activity log, and attachment bucket.';
+
+  static const String setupFilePath = 'supabase/job_order_chapter4_patch.sql';
+
+  static const String setupHint =
+      'Run the SQL in supabase/job_order_chapter4_patch.sql to create the Job Order tables, activity log, and attachment bucket.';
 
   String _s(dynamic value) => value == null ? '' : value.toString().trim();
 
@@ -83,6 +86,127 @@ class JobOrderModuleService {
     return out;
   }
 
+  DateTime? _parseDate(dynamic value) {
+    if (value == null) return null;
+    if (value is DateTime) return value;
+    return DateTime.tryParse(value.toString());
+  }
+
+  String _maintenanceScheduleId(String jobOrderId) {
+    final clean = jobOrderId.trim().toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
+    return 'MS${clean.isEmpty ? newId('SCH') : clean}';
+  }
+
+  String _maintenanceStatusForJob(String status, DateTime? preferredDate) {
+    final normalized = status.trim().toLowerCase();
+    if (normalized == 'in progress') return 'In Progress';
+    if (normalized == 'completed') return 'Completed';
+    if (normalized == 'cancelled') return 'Cancelled';
+    if (preferredDate != null) {
+      final today = DateTime.now();
+      final dueDate = DateTime(preferredDate.year, preferredDate.month, preferredDate.day);
+      final currentDay = DateTime(today.year, today.month, today.day);
+      if (dueDate.isBefore(currentDay)) return 'Overdue';
+    }
+    return 'Scheduled';
+  }
+
+  Future<void> _setVehicleUnderService(String vehicleId) async {
+    final cleanVehicleId = vehicleId.trim();
+    if (cleanVehicleId.isEmpty) return;
+
+    try {
+      final row = await _client
+          .from('vehicle')
+          .select('vehicle_status')
+          .eq('vehicle_id', cleanVehicleId)
+          .maybeSingle();
+      final currentStatus = row == null ? '' : _s((row as Map)['vehicle_status']);
+      if (currentStatus.toLowerCase() == 'inactive') return;
+
+      await _client
+          .from('vehicle')
+          .update({'vehicle_status': 'Maintenance'})
+          .eq('vehicle_id', cleanVehicleId);
+    } catch (_) {}
+  }
+
+  Future<void> _restoreVehicleAvailabilityIfPossible(String vehicleId) async {
+    final cleanVehicleId = vehicleId.trim();
+    if (cleanVehicleId.isEmpty) return;
+
+    try {
+      final row = await _client
+          .from('vehicle')
+          .select('vehicle_status')
+          .eq('vehicle_id', cleanVehicleId)
+          .maybeSingle();
+      final currentStatus = row == null ? '' : _s((row as Map)['vehicle_status']);
+      if (currentStatus.toLowerCase() == 'inactive') return;
+
+      final response = await _client
+          .from('service_job_order')
+          .select('job_order_id')
+          .eq('vehicle_id', cleanVehicleId)
+          .inFilter('status', ['Pending', 'In Progress']);
+      final openJobs = _rows(response);
+      final nextStatus = openJobs.isEmpty ? 'Available' : 'Maintenance';
+
+      await _client
+          .from('vehicle')
+          .update({'vehicle_status': nextStatus})
+          .eq('vehicle_id', cleanVehicleId);
+    } catch (_) {}
+  }
+
+  Future<void> _syncMaintenanceScheduleForJob(Map<String, dynamic> job) async {
+    final jobOrderId = _s(job['job_order_id']);
+    final vehicleId = _s(job['vehicle_id']);
+    if (jobOrderId.isEmpty || vehicleId.isEmpty) return;
+
+    final status = _s(job['status']);
+    final preferredDate = _parseDate(job['preferred_date']);
+    final scheduleId = _maintenanceScheduleId(jobOrderId);
+
+    try {
+      if (preferredDate == null || status == 'Cancelled') {
+        await _client.from('maintenance_schedule').delete().eq('schedule_id', scheduleId);
+        return;
+      }
+
+      final notes = <String>[
+        'Linked Job Order: $jobOrderId',
+        if (_s(job['problem_description']).isNotEmpty) _s(job['problem_description']),
+      ].join('\n');
+
+      final payload = <String, dynamic>{
+        'vehicle_id': vehicleId,
+        'vendor_id': _s(job['vendor_id']).isEmpty ? null : _s(job['vendor_id']),
+        'schedule_type': _s(job['job_type']).isEmpty ? 'Service Job' : _s(job['job_type']),
+        'trigger_date': _date(preferredDate),
+        'next_maintenance_date': _date(preferredDate),
+        'schedule_status': _maintenanceStatusForJob(status, preferredDate),
+        'notes': notes,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      };
+
+      final existing = await _client
+          .from('maintenance_schedule')
+          .select('schedule_id')
+          .eq('schedule_id', scheduleId)
+          .maybeSingle();
+
+      if (existing == null) {
+        await _client.from('maintenance_schedule').insert({
+          'schedule_id': scheduleId,
+          ...payload,
+        });
+      } else {
+        await _client.from('maintenance_schedule').update(payload).eq('schedule_id', scheduleId);
+      }
+    } catch (_) {}
+  }
+
   String vehicleLabel(Map<String, dynamic>? vehicle) {
     if (vehicle == null) return 'Unknown vehicle';
     final plate = _s(vehicle['vehicle_plate_no']);
@@ -104,27 +228,80 @@ class JobOrderModuleService {
     return category.isEmpty ? name : '$name ($category)';
   }
 
-  Future<List<Map<String, dynamic>>> fetchVehicles() async {
-    final response = await _client
+  Future<List<Map<String, dynamic>>> fetchVehicles({String? leaserId}) async {
+    var query = _client
         .from('vehicle')
-        .select('vehicle_id, vehicle_brand, vehicle_model, vehicle_plate_no, vehicle_year, mileage_km, vehicle_location, vehicle_status, leaser_id')
-        .order('vehicle_plate_no', ascending: true);
+        .select('vehicle_id, vehicle_brand, vehicle_model, vehicle_plate_no, vehicle_year, mileage_km, vehicle_location, vehicle_status, leaser_id');
+
+    if (_s(leaserId).isNotEmpty) {
+      query = query.eq('leaser_id', leaserId!.trim());
+    }
+
+    final response = await query.order('vehicle_plate_no', ascending: true);
     return _rows(response);
   }
 
-  Future<List<Map<String, dynamic>>> fetchVendors() async {
-    final response = await _client
-        .from('vendor')
-        .select('*')
-        .order('vendor_name', ascending: true);
+  Future<List<Map<String, dynamic>>> fetchVendors({bool onlyActive = false}) async {
+    var query = _client.from('vendor').select('*');
+    if (onlyActive) {
+      query = query.eq('vendor_status', 'Active');
+    }
+    final response = await query.order('vendor_name', ascending: true);
     return _rows(response);
   }
 
-  Future<List<Map<String, dynamic>>> fetchJobOrders() async {
-    final response = await _client
+  Future<Set<String>> fetchReservedServiceDateKeysForVehicle(String vehicleId) async {
+    final cleanVehicleId = vehicleId.trim();
+    if (cleanVehicleId.isEmpty) return <String>{};
+
+    final blocked = <String>{};
+
+    final jobs = await _client
         .from('service_job_order')
-        .select('*')
-        .order('created_at', ascending: false);
+        .select('preferred_date, status')
+        .eq('vehicle_id', cleanVehicleId);
+    for (final job in _rows(jobs)) {
+      if (_s(job['status']).toLowerCase() == 'cancelled') continue;
+      final date = _parseDate(job['preferred_date']);
+      if (date == null) continue;
+      blocked.add(_date(date));
+    }
+
+    try {
+      final schedules = await _client
+          .from('maintenance_schedule')
+          .select('trigger_date, next_maintenance_date, schedule_status')
+          .eq('vehicle_id', cleanVehicleId);
+      for (final schedule in _rows(schedules)) {
+        if (_s(schedule['schedule_status']).toLowerCase() == 'cancelled') continue;
+        for (final raw in [schedule['trigger_date'], schedule['next_maintenance_date']]) {
+          final date = _parseDate(raw);
+          if (date == null) continue;
+          blocked.add(_date(date));
+        }
+      }
+    } catch (_) {}
+
+    return blocked;
+  }
+
+  Future<List<Map<String, dynamic>>> fetchJobOrders({
+    List<String>? vehicleIds,
+    String? vendorId,
+  }) async {
+    var query = _client.from('service_job_order').select('*');
+
+    if (_s(vendorId).isNotEmpty) {
+      query = query.eq('vendor_id', vendorId!.trim());
+    }
+
+    if (vehicleIds != null) {
+      final ids = vehicleIds.map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+      if (ids.isEmpty) return const [];
+      query = query.inFilter('vehicle_id', ids);
+    }
+
+    final response = await query.order('created_at', ascending: false);
     return _rows(response);
   }
 
@@ -146,6 +323,26 @@ class JobOrderModuleService {
         .order('created_at', ascending: false);
     return _rows(response);
   }
+  Future<List<Map<String, dynamic>>> fetchServiceCosts({
+    List<String>? jobOrderIds,
+    String? vendorId,
+  }) async {
+    var query = _client.from('service_cost').select('*');
+
+    if (_s(vendorId).isNotEmpty) {
+      query = query.eq('vendor_id', vendorId!.trim());
+    }
+
+    if (jobOrderIds != null) {
+      final ids = jobOrderIds.map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+      if (ids.isEmpty) return const [];
+      query = query.inFilter('job_order_id', ids);
+    }
+
+    final response = await query.order('created_at', ascending: false);
+    return _rows(response);
+  }
+
 
   Future<List<Map<String, dynamic>>> fetchJobAttachments(String jobOrderId) async {
     final response = await _client
@@ -198,15 +395,36 @@ class JobOrderModuleService {
     String? attachmentName,
   }) async {
     final id = newId('JOB');
+    final cleanVehicleId = vehicleId.trim();
+    final cleanVendorId = vendorId.trim();
+    final cleanJobType = jobType.trim();
     final user = _client.auth.currentUser;
+
+    if (preferredDate != null) {
+      final dateKey = _date(preferredDate);
+      final existing = await _client
+          .from('service_job_order')
+          .select('job_order_id, status, preferred_date')
+          .eq('vehicle_id', cleanVehicleId)
+          .eq('preferred_date', dateKey);
+      final conflicts = _rows(existing)
+          .where((row) => _s(row['status']).toLowerCase() != 'cancelled')
+          .toList();
+      if (conflicts.isNotEmpty) {
+        throw Exception(
+          'This vehicle already has a job order on ${preferredDate.day}/${preferredDate.month}/${preferredDate.year}. Please choose another service date.',
+        );
+      }
+    }
+
     final actor = _s(user?.email).isEmpty ? _s(user?.id) : _s(user?.email);
     final now = DateTime.now().toUtc().toIso8601String();
 
-    await _client.from('service_job_order').insert({
+    final jobPayload = <String, dynamic>{
       'job_order_id': id,
-      'vehicle_id': vehicleId.trim(),
-      'vendor_id': vendorId.trim(),
-      'job_type': jobType.trim(),
+      'vehicle_id': cleanVehicleId,
+      'vendor_id': cleanVendorId,
+      'job_type': cleanJobType,
       'priority': priority.trim(),
       'problem_description': problemDescription.trim(),
       'preferred_date': preferredDate == null ? null : _date(preferredDate),
@@ -216,13 +434,15 @@ class JobOrderModuleService {
       'requested_by': actor.isEmpty ? null : actor,
       'assigned_at': now,
       'updated_at': now,
-    });
+    };
+
+    await _client.from('service_job_order').insert(jobPayload);
 
     await addJobActivity(
       jobOrderId: id,
       activityType: 'created',
       title: 'Job created',
-      detail: 'New $jobType request created.',
+      detail: 'New $cleanJobType request created.',
       toStatus: 'Pending',
       actorName: actor,
     );
@@ -230,7 +450,7 @@ class JobOrderModuleService {
     final vendor = await _client
         .from('vendor')
         .select('vendor_name, service_category')
-        .eq('vendor_id', vendorId)
+        .eq('vendor_id', cleanVendorId)
         .maybeSingle();
     final vendorMap = vendor == null ? null : Map<String, dynamic>.from(vendor as Map);
     await addJobActivity(
@@ -240,6 +460,9 @@ class JobOrderModuleService {
       detail: 'Assigned to ${vendorLabel(vendorMap)}.',
       actorName: actor,
     );
+
+    await _setVehicleUnderService(cleanVehicleId);
+    await _syncMaintenanceScheduleForJob(jobPayload);
 
     if (attachmentBytes != null && attachmentBytes.isNotEmpty) {
       await uploadAttachment(
@@ -279,6 +502,11 @@ class JobOrderModuleService {
       detail: 'Assigned to ${vendorLabel(vendorMap)}.',
       actorName: actor,
     );
+
+    final updatedJob = await fetchJobOrder(jobOrderId);
+    if (updatedJob != null) {
+      await _syncMaintenanceScheduleForJob(updatedJob);
+    }
   }
 
   Future<void> updateJobStatus({
@@ -289,6 +517,7 @@ class JobOrderModuleService {
   }) async {
     final user = _client.auth.currentUser;
     final actor = _s(user?.email).isEmpty ? _s(user?.id) : _s(user?.email);
+    final job = await fetchJobOrder(jobOrderId);
     final payload = <String, dynamic>{
       'status': newStatus.trim(),
       'remarks': remarks.trim(),
@@ -311,6 +540,61 @@ class JobOrderModuleService {
       toStatus: newStatus.trim(),
       actorName: actor,
     );
+
+    final updatedJob = {
+      if (job != null) ...job,
+      'job_order_id': jobOrderId,
+      'status': newStatus.trim(),
+      'remarks': remarks.trim(),
+      'closed_at': payload['closed_at'],
+    };
+
+    final vehicleId = _s(updatedJob['vehicle_id']);
+    final normalizedStatus = newStatus.trim().toLowerCase();
+    if (vehicleId.isNotEmpty) {
+      if (normalizedStatus == 'pending' || normalizedStatus == 'in progress') {
+        await _setVehicleUnderService(vehicleId);
+      } else {
+        await _restoreVehicleAvailabilityIfPossible(vehicleId);
+      }
+    }
+
+    await _syncMaintenanceScheduleForJob(updatedJob);
+  }
+
+  Future<void> deleteJobOrder(String jobOrderId) async {
+    final cleanJobOrderId = jobOrderId.trim();
+    if (cleanJobOrderId.isEmpty) return;
+
+    final job = await fetchJobOrder(cleanJobOrderId);
+    final vehicleId = _s(job?['vehicle_id']);
+
+    try {
+      final attachments = await fetchJobAttachments(cleanJobOrderId);
+      for (final attachment in attachments) {
+        final path = _s(attachment['file_path']);
+        if (path.isEmpty) continue;
+        try {
+          await _client.storage.from(attachmentBucket).remove([path]);
+        } catch (_) {}
+      }
+    } catch (_) {}
+
+    try {
+      await _client
+          .from('maintenance_schedule')
+          .delete()
+          .eq('schedule_id', _maintenanceScheduleId(cleanJobOrderId));
+    } catch (_) {}
+
+    await _client
+        .from('service_job_order')
+        .delete()
+        .eq('job_order_id', cleanJobOrderId);
+
+    if (vehicleId.isNotEmpty) {
+      await _restoreVehicleAvailabilityIfPossible(vehicleId);
+    }
   }
 
   Future<Map<String, dynamic>> uploadAttachment({
@@ -384,11 +668,11 @@ class JobOrderModuleService {
         lower.contains('assigned_at') ||
         lower.contains('closed_at') ||
         lower.contains('job_order_files')) {
-      return 'Your Chapter 4 Job Order module is not fully added in Supabase yet. Run the SQL patch from job_order_module_service.dart or the SQL file in the supabase folder, then try again.\n\n$message';
+      return 'Your Chapter 4 Job Order module is not fully added in Supabase yet. Run the SQL in supabase/job_order_chapter4_patch.sql, then try again.\n\n$message';
     }
 
     if (lower.contains('storage') || lower.contains('bucket')) {
-      return 'The Job Order attachment bucket is not ready in Supabase yet. Run the Job Order SQL patch, then try again.\n\n$message';
+      return 'The Job Order attachment bucket is not ready in Supabase yet. Run the SQL in supabase/job_order_chapter4_patch.sql, then try again.\n\n$message';
     }
 
     if (lower.contains('row-level security')) {
@@ -398,3 +682,12 @@ class JobOrderModuleService {
     return message;
   }
 }
+
+
+
+
+
+
+
+
+

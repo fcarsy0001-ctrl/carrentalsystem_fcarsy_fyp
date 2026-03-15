@@ -29,9 +29,41 @@ class RentableVehicleService {
     }
   }
 
+  Future<Set<String>?> fetchBlockedVehicleIds() async {
+    try {
+      final rows = await _client
+          .from('service_job_order')
+          .select('vehicle_id')
+          .inFilter('status', ['Pending', 'In Progress']);
+      final output = <String>{};
+      for (final row in _rows(rows)) {
+        final vehicleId = _s(row['vehicle_id']);
+        if (vehicleId.isNotEmpty) output.add(vehicleId);
+      }
+      return output;
+    } catch (_) {
+      return null;
+    }
+  }
+
   bool isInActiveBranch(Map<String, dynamic> row, Set<String>? activeLocations) {
     if (activeLocations == null) return true;
     final location = _s(row['vehicle_location']);
     return location.isNotEmpty && activeLocations.contains(location);
+  }
+
+  bool isRentableVehicle(
+      Map<String, dynamic> row,
+      Set<String>? activeLocations,
+      Set<String>? blockedVehicleIds,
+      ) {
+    final status = _s(row['vehicle_status']).toLowerCase();
+    final vehicleId = _s(row['vehicle_id']);
+    if (status != 'available') return false;
+    if (!isInActiveBranch(row, activeLocations)) return false;
+    if (blockedVehicleIds != null && vehicleId.isNotEmpty && blockedVehicleIds.contains(vehicleId)) {
+      return false;
+    }
+    return true;
   }
 }

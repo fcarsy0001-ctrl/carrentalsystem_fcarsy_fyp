@@ -169,6 +169,7 @@ alter table public.vehicle_location_history
         'new_location': newLocation.trim(),
         'previous_parking_slot': previousParkingSlot.isEmpty ? null : previousParkingSlot,
         'new_parking_slot': parkingSlot.trim().isEmpty ? null : parkingSlot.trim(),
+        'moved_at': now,
         'moved_by': _s(movedBy).isEmpty ? null : _s(movedBy),
         'movement_reason': _s(remarks).isEmpty ? null : _s(remarks),
       });
@@ -179,6 +180,7 @@ alter table public.vehicle_location_history
           'vehicle_id': vehicleId.trim(),
           'previous_location': previousLocation.isEmpty ? null : previousLocation,
           'new_location': newLocation.trim(),
+          'moved_at': now,
           'moved_by': _s(movedBy).isEmpty ? null : _s(movedBy),
           'movement_reason': note.isEmpty ? null : note,
         });
@@ -234,9 +236,16 @@ alter table public.vehicle_location_history
 
   String currentUpdatedAt(Map<String, dynamic> vehicle, {Map<String, dynamic>? latestHistory}) {
     final direct = _s(vehicle['location_updated_at']);
-    if (direct.isNotEmpty) return direct;
-    if (latestHistory == null) return '';
-    return _s(latestHistory['moved_at']);
+    final history = latestHistory == null ? '' : _s(latestHistory['moved_at']);
+
+    if (direct.isEmpty) return history;
+    if (history.isEmpty) return direct;
+
+    final directTime = DateTime.tryParse(direct);
+    final historyTime = DateTime.tryParse(history);
+    if (directTime == null || historyTime == null) return history;
+
+    return historyTime.isAfter(directTime) ? history : direct;
   }
 
   String statusLabel(Map<String, dynamic> vehicle) {
@@ -246,7 +255,7 @@ alter table public.vehicle_location_history
     if (status == 'inactive' || status.contains('deactive') || status == 'disabled') return 'Inactive';
     if (location.isEmpty) return 'Pending';
     if (status == 'available' || status == 'active') return 'Active';
-    if (status.contains('maintenance') || status == 'unavailable' || status == 'unavailable') return 'Maintenance';
+    if (status.contains('maint') || status == 'unavail' || status == 'unavailable') return 'Maintenance';
     if (status == 'pending' || status == 'processing' || status.isEmpty) return 'Pending';
     return 'Other';
   }
@@ -280,3 +289,5 @@ alter table public.vehicle_location_history
     return '$safePrefix$suffix';
   }
 }
+
+

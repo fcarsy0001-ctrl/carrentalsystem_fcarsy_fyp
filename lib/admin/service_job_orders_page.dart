@@ -33,9 +33,31 @@ const List<String> _statuses = [
 ];
 
 class ServiceJobOrdersPage extends StatefulWidget {
-  const ServiceJobOrdersPage({super.key, this.embedded = false});
+  const ServiceJobOrdersPage({
+    super.key,
+    this.embedded = false,
+    this.leaserId,
+    this.title,
+    this.subtitle,
+    this.allowVendorReassign = false,
+    this.allowCancelledStatus = true,
+  });
 
   final bool embedded;
+  final String? leaserId;
+  final String? title;
+  final String? subtitle;
+  final bool allowVendorReassign;
+  final bool allowCancelledStatus;
+
+  bool get isLeaserView => (leaserId ?? '').trim().isNotEmpty;
+
+  String get pageTitle => title ?? (isLeaserView ? 'Service Jobs' : 'Job Orders');
+
+  String get pageSubtitle => subtitle ??
+      (isLeaserView
+          ? 'Create and track maintenance or inspection requests for your vehicles.'
+          : 'Manage maintenance and service requests across the fleet.');
 
   @override
   State<ServiceJobOrdersPage> createState() => _ServiceJobOrdersPageState();
@@ -60,10 +82,15 @@ class _ServiceJobOrdersPageState extends State<ServiceJobOrdersPage> {
   }
 
   Future<_JobOrderBundle> _load() async {
-    final jobs = await _service.fetchJobOrders();
-    final vehicles = await _service.fetchVehicles();
-    final vendors = await _service.fetchVendors();
-    return _JobOrderBundle(jobs: jobs, vehicles: vehicles, vendors: vendors);
+    final vehicles = await _service.fetchVehicles(leaserId: widget.leaserId);
+    final vehicleIds = vehicles.map((row) => _string(row['vehicle_id'])).where((id) => id.isNotEmpty).toList();
+    final jobs = await _service.fetchJobOrders(
+      vehicleIds: widget.isLeaserView ? vehicleIds : null,
+    );
+    final vendors = await _service.fetchVendors(onlyActive: widget.isLeaserView);
+    final jobOrderIds = jobs.map((row) => _string(row['job_order_id'])).where((id) => id.isNotEmpty).toList();
+    final costs = await _service.fetchServiceCosts(jobOrderIds: jobOrderIds);
+    return _JobOrderBundle(jobs: jobs, vehicles: vehicles, vendors: vendors, costs: costs);
   }
 
   Future<void> _refresh() async {
@@ -80,6 +107,7 @@ class _ServiceJobOrdersPageState extends State<ServiceJobOrdersPage> {
           service: _service,
           vehicles: bundle.vehicles,
           vendors: bundle.vendors,
+          jobs: bundle.jobs,
         ),
       ),
     );
@@ -109,11 +137,72 @@ class _ServiceJobOrdersPageState extends State<ServiceJobOrdersPage> {
         builder: (_) => _JobOrderDetailsPage(
           service: _service,
           jobOrderId: jobOrderId,
+          leaserId: widget.leaserId,
+          allowVendorReassign: widget.allowVendorReassign,
+          allowCancelledStatus: widget.allowCancelledStatus,
         ),
       ),
     );
     if (!mounted) return;
     await _refresh();
+  }
+
+  bool _canDeleteJob(Map<String, dynamic> job) {
+    if (!widget.isLeaserView) return false;
+    final status = _string(job['status']).toLowerCase();
+    return status == 'pending' || status == 'cancelled';
+  }
+
+  Future<void> _deleteJob(Map<String, dynamic> job) async {
+    final jobOrderId = _string(job['job_order_id']);
+    if (jobOrderId.isEmpty) return;
+
+    if (!_canDeleteJob(job)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Only pending or cancelled job orders can be deleted.')),
+      );
+      return;
+    }
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete job order'),
+        content: Text(
+          'Delete job order $jobOrderId? This will also remove the linked maintenance schedule, service costs, attachments, and activity log for this request.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    try {
+      await _service.deleteJobOrder(jobOrderId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Job order deleted.')),
+      );
+      await _refresh();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_service.explainError(error)),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 
   List<Map<String, dynamic>> _filteredJobs(
@@ -171,6 +260,8 @@ class _ServiceJobOrdersPageState extends State<ServiceJobOrdersPage> {
 
         final vehicleMap = _service.indexBy(bundle.vehicles, 'vehicle_id');
         final vendorMap = _service.indexBy(bundle.vendors, 'vendor_id');
+        final costTotalByJob = _costTotalsByJob(bundle.costs);
+        final costCountByJob = _costCountsByJob(bundle.costs);
         final filtered = _filteredJobs(bundle, vehicleMap, vendorMap);
 
         final total = bundle.jobs.length;
@@ -183,16 +274,18 @@ class _ServiceJobOrdersPageState extends State<ServiceJobOrdersPage> {
           child: ListView(
             padding: const EdgeInsets.fromLTRB(16, 14, 16, 24),
             children: [
-              Text(
-                'Job Orders',
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w900),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'Manage maintenance and service requests across the fleet.',
-                style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
-              ),
-              const SizedBox(height: 16),
+              if (!widget.embedded) ...[
+                Text(
+                  widget.pageTitle,
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w900),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  widget.pageSubtitle,
+                  style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+                ),
+                const SizedBox(height: 16),
+              ],
               TextField(
                 decoration: InputDecoration(
                   hintText: 'Search job orders, vehicles, or vendors',
@@ -320,8 +413,10 @@ class _ServiceJobOrdersPageState extends State<ServiceJobOrdersPage> {
               ),
               const SizedBox(height: 10),
               if (filtered.isEmpty)
-                const _EmptyCard(
-                  message: 'No job orders match the current filters yet. Create a new job order to start tracking service work.',
+                _EmptyCard(
+                  message: widget.isLeaserView
+                      ? 'No job orders match the current filters yet. Create a new job order to start tracking service work.'
+                      : 'No job orders match the current filters yet.',
                 )
               else
                 ...filtered.map((job) {
@@ -334,7 +429,11 @@ class _ServiceJobOrdersPageState extends State<ServiceJobOrdersPage> {
                       job: job,
                       vehicle: vehicle,
                       vendor: vendor,
+                      totalCost: costTotalByJob[jobOrderId] ?? _amount(job['actual_cost']),
+                      costRecordCount: costCountByJob[jobOrderId] ?? 0,
                       onTap: () => _openDetails(jobOrderId),
+                      onDelete: widget.isLeaserView ? () => _deleteJob(job) : null,
+                      canDelete: _canDeleteJob(job),
                     ),
                   );
                 }),
@@ -356,7 +455,7 @@ class _ServiceJobOrdersPageState extends State<ServiceJobOrdersPage> {
                   ),
                 ),
               ],
-              if (!widget.embedded) const SizedBox(height: 86),
+              if (!widget.embedded && widget.isLeaserView) const SizedBox(height: 86),
             ],
           ),
         );
@@ -373,8 +472,8 @@ class _ServiceJobOrdersPageState extends State<ServiceJobOrdersPage> {
         children: [
           AdminModuleHeader(
             icon: Icons.build_circle_outlined,
-            title: 'Job Orders',
-            subtitle: 'Monitor service requests, assignments, and status progress.',
+            title: widget.pageTitle,
+            subtitle: widget.pageSubtitle,
             actions: [
               IconButton(
                 tooltip: 'Refresh',
@@ -382,13 +481,15 @@ class _ServiceJobOrdersPageState extends State<ServiceJobOrdersPage> {
                 icon: const Icon(Icons.refresh_rounded),
               ),
             ],
-            primaryActions: [
+            primaryActions: widget.isLeaserView
+                ? [
               FilledButton.icon(
                 onPressed: _openCreateFromCurrentData,
                 icon: const Icon(Icons.add),
                 label: const Text('Create Job Order'),
               ),
-            ],
+            ]
+                : const [],
           ),
           const Divider(height: 1),
           Expanded(child: body),
@@ -398,7 +499,7 @@ class _ServiceJobOrdersPageState extends State<ServiceJobOrdersPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Job Orders'),
+        title: Text(widget.pageTitle),
         actions: [
           IconButton(
             tooltip: 'Refresh',
@@ -408,14 +509,16 @@ class _ServiceJobOrdersPageState extends State<ServiceJobOrdersPage> {
         ],
       ),
       body: body,
-      bottomNavigationBar: SafeArea(
+      bottomNavigationBar: widget.isLeaserView
+          ? SafeArea(
         minimum: const EdgeInsets.fromLTRB(16, 8, 16, 16),
         child: FilledButton.icon(
           onPressed: _openCreateFromCurrentData,
           icon: const Icon(Icons.add),
           label: const Text('Create Job Order'),
         ),
-      ),
+      )
+          : null,
     );
   }
 }
@@ -425,11 +528,13 @@ class _JobOrderBundle {
     required this.jobs,
     required this.vehicles,
     required this.vendors,
+    required this.costs,
   });
 
   final List<Map<String, dynamic>> jobs;
   final List<Map<String, dynamic>> vehicles;
   final List<Map<String, dynamic>> vendors;
+  final List<Map<String, dynamic>> costs;
 }
 
 class _JobOrderCard extends StatelessWidget {
@@ -437,13 +542,21 @@ class _JobOrderCard extends StatelessWidget {
     required this.job,
     required this.vehicle,
     required this.vendor,
+    required this.totalCost,
+    required this.costRecordCount,
     required this.onTap,
+    this.onDelete,
+    this.canDelete = false,
   });
 
   final Map<String, dynamic> job;
   final Map<String, dynamic>? vehicle;
   final Map<String, dynamic>? vendor;
+  final double totalCost;
+  final int costRecordCount;
   final VoidCallback onTap;
+  final VoidCallback? onDelete;
+  final bool canDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -496,7 +609,32 @@ class _JobOrderCard extends StatelessWidget {
                       ],
                     ),
                   ),
-                  const Icon(Icons.chevron_right_rounded),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (onDelete != null)
+                        PopupMenuButton<String>(
+                          tooltip: 'More actions',
+                          onSelected: (value) {
+                            if (value == 'delete') {
+                              onDelete?.call();
+                            }
+                          },
+                          itemBuilder: (context) => [
+                            PopupMenuItem<String>(
+                              value: 'delete',
+                              enabled: canDelete,
+                              child: Text(
+                                canDelete
+                                    ? 'Delete job order'
+                                    : 'Delete (Pending/Cancelled only)',
+                              ),
+                            ),
+                          ],
+                        ),
+                      const Icon(Icons.chevron_right_rounded),
+                    ],
+                  ),
                 ],
               ),
               const SizedBox(height: 14),
@@ -509,16 +647,23 @@ class _JobOrderCard extends StatelessWidget {
               Row(
                 children: [
                   Text(
-                    'Estimated Cost',
+                    'Total Cost',
                     style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
                   ),
                   const Spacer(),
                   Text(
-                    _money(job['estimated_cost']),
+                    _money(totalCost),
                     style: const TextStyle(fontWeight: FontWeight.w900),
                   ),
                 ],
               ),
+              if (costRecordCount > 0) ...[
+                const SizedBox(height: 6),
+                Text(
+                  '${costRecordCount} service cost record${costRecordCount == 1 ? '' : 's'}',
+                  style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+                ),
+              ],
             ],
           ),
         ),
@@ -531,11 +676,13 @@ class _CreateJobOrderPage extends StatefulWidget {
     required this.service,
     required this.vehicles,
     required this.vendors,
+    required this.jobs,
   });
 
   final JobOrderModuleService service;
   final List<Map<String, dynamic>> vehicles;
   final List<Map<String, dynamic>> vendors;
+  final List<Map<String, dynamic>> jobs;
 
   @override
   State<_CreateJobOrderPage> createState() => _CreateJobOrderPageState();
@@ -551,11 +698,14 @@ class _CreateJobOrderPageState extends State<_CreateJobOrderPage> {
   String _priority = 'Medium';
   bool _saving = false;
   _PickedJobFile? _pickedFile;
+  DateTime? _preferredDate;
+  Set<String> _blockedDateKeys = <String>{};
 
   bool get _canSubmit {
     return !_saving &&
         (_vehicleId ?? '').trim().isNotEmpty &&
         (_vendorId ?? '').trim().isNotEmpty &&
+        _preferredDate != null &&
         _problemController.text.trim().isNotEmpty;
   }
 
@@ -569,6 +719,7 @@ class _CreateJobOrderPageState extends State<_CreateJobOrderPage> {
       _vendorId = _string(widget.vendors.first['vendor_id']);
     }
     _problemController.addListener(() => setState(() {}));
+    _reloadBlockedDates();
   }
 
   @override
@@ -622,8 +773,108 @@ class _CreateJobOrderPageState extends State<_CreateJobOrderPage> {
     }
   }
 
+  String _dateKey(DateTime value) {
+    final normalized = DateTime(value.year, value.month, value.day);
+    final month = normalized.month.toString().padLeft(2, '0');
+    final day = normalized.day.toString().padLeft(2, '0');
+    return '${normalized.year}-$month-$day';
+  }
+
+  Future<void> _reloadBlockedDates({bool clearInvalidSelection = false}) async {
+    final vehicleId = (_vehicleId ?? '').trim();
+    final blocked = vehicleId.isEmpty
+        ? <String>{}
+        : await widget.service.fetchReservedServiceDateKeysForVehicle(vehicleId);
+    if (!mounted) return;
+
+    final shouldClear = clearInvalidSelection &&
+        _preferredDate != null &&
+        blocked.contains(_dateKey(_preferredDate!));
+
+    setState(() {
+      _blockedDateKeys = blocked;
+      if (shouldClear) {
+        _preferredDate = null;
+      }
+    });
+
+    if (shouldClear && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Preferred date cleared because that date is already used for the selected vehicle.')),
+      );
+    }
+  }
+
+  bool _isBlockedPreferredDate(DateTime value) {
+    return _blockedDateKeys.contains(_dateKey(value));
+  }
+
+  DateTime _initialPreferredDate() {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final lastDate = DateTime(now.year + 3, 12, 31);
+    var candidate = _preferredDate == null
+        ? today
+        : DateTime(_preferredDate!.year, _preferredDate!.month, _preferredDate!.day);
+    if (candidate.isBefore(today)) {
+      candidate = today;
+    }
+    while (!candidate.isAfter(lastDate) && _isBlockedPreferredDate(candidate)) {
+      candidate = candidate.add(const Duration(days: 1));
+    }
+    return candidate.isAfter(lastDate) ? today : candidate;
+  }
+
+  Future<void> _pickPreferredDate() async {
+    await _reloadBlockedDates(clearInvalidSelection: true);
+    if (!mounted) return;
+
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final lastDate = DateTime(now.year + 3, 12, 31);
+    var hasAvailableDate = false;
+    var probe = today;
+    while (!probe.isAfter(lastDate)) {
+      if (!_isBlockedPreferredDate(probe)) {
+        hasAvailableDate = true;
+        break;
+      }
+      probe = probe.add(const Duration(days: 1));
+    }
+
+    if (!hasAvailableDate) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('This vehicle has no available service dates in the selectable range.')),
+      );
+      return;
+    }
+
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _initialPreferredDate(),
+      firstDate: today,
+      lastDate: lastDate,
+      selectableDayPredicate: (day) => !_isBlockedPreferredDate(day),
+    );
+    if (picked == null) return;
+    setState(() => _preferredDate = picked);
+  }
+
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
+    if (_preferredDate == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please select the service date for this job order.')),
+      );
+      return;
+    }
+    if (_isBlockedPreferredDate(_preferredDate!)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('This vehicle already has a job order on that service date. Please choose another date.')),
+      );
+      return;
+    }
     if (!_canSubmit) return;
 
     setState(() => _saving = true);
@@ -634,6 +885,7 @@ class _CreateJobOrderPageState extends State<_CreateJobOrderPage> {
         priority: _priority,
         problemDescription: _problemController.text.trim(),
         vendorId: _vendorId!,
+        preferredDate: _preferredDate,
         attachmentBytes: _pickedFile?.bytes,
         attachmentName: _pickedFile?.name,
       );
@@ -688,7 +940,10 @@ class _CreateJobOrderPageState extends State<_CreateJobOrderPage> {
                         ),
                       )
                           .toList(),
-                      onChanged: (value) => setState(() => _vehicleId = value),
+                      onChanged: (value) {
+                        setState(() => _vehicleId = value);
+                        _reloadBlockedDates(clearInvalidSelection: true);
+                      },
                       validator: (value) => (value == null || value.trim().isEmpty) ? 'Choose a vehicle' : null,
                     ),
                   ],
@@ -731,6 +986,31 @@ class _CreateJobOrderPageState extends State<_CreateJobOrderPage> {
                         ),
                       )
                           .toList(),
+                    ),
+                    const SizedBox(height: 16),
+                    const _SectionHeader('Preferred Service Date'),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(
+                        _preferredDate == null
+                            ? 'No date selected yet'
+                            : '${_preferredDate!.day}/${_preferredDate!.month}/${_preferredDate!.year}',
+                      ),
+                      subtitle: const Text('This date will also appear in the maintenance calendar. Dates already used by this vehicle are disabled.'),
+                      trailing: Wrap(
+                        spacing: 8,
+                        children: [
+                          if (_preferredDate != null)
+                            IconButton(
+                              onPressed: () => setState(() => _preferredDate = null),
+                              icon: const Icon(Icons.close_rounded),
+                            ),
+                          OutlinedButton(
+                            onPressed: _pickPreferredDate,
+                            child: const Text('Pick date'),
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                 ),
@@ -869,10 +1149,16 @@ class _JobOrderDetailsPage extends StatefulWidget {
   const _JobOrderDetailsPage({
     required this.service,
     required this.jobOrderId,
+    this.leaserId,
+    this.allowVendorReassign = false,
+    this.allowCancelledStatus = true,
   });
 
   final JobOrderModuleService service;
   final String jobOrderId;
+  final String? leaserId;
+  final bool allowVendorReassign;
+  final bool allowCancelledStatus;
 
   @override
   State<_JobOrderDetailsPage> createState() => _JobOrderDetailsPageState();
@@ -892,7 +1178,7 @@ class _JobOrderDetailsPageState extends State<_JobOrderDetailsPage> {
     if (job == null) {
       throw Exception('Job order not found.');
     }
-    final vehicles = await widget.service.fetchVehicles();
+    final vehicles = await widget.service.fetchVehicles(leaserId: widget.leaserId);
     final vendors = await widget.service.fetchVendors();
     final attachments = await widget.service.fetchJobAttachments(widget.jobOrderId);
     final activities = await widget.service.fetchJobActivities(widget.jobOrderId);
@@ -1027,6 +1313,9 @@ class _JobOrderDetailsPageState extends State<_JobOrderDetailsPage> {
         builder: (_) => _UpdateJobStatusPage(
           service: widget.service,
           job: bundle.job,
+          availableStatuses: widget.allowCancelledStatus
+              ? _statuses
+              : _statuses.where((status) => status != 'Cancelled').toList(),
         ),
       ),
     );
@@ -1127,8 +1416,9 @@ class _JobOrderDetailsPageState extends State<_JobOrderDetailsPage> {
           final job = bundle.job;
           final vehicle = bundle.vehicle;
           final vendor = bundle.vendor;
-          final latestCost = bundle.costs.isEmpty ? null : bundle.costs.first;
-          final actualCost = latestCost == null ? job['actual_cost'] : latestCost['total_cost'];
+          final totalCost = bundle.costs.isEmpty
+              ? _amount(job['actual_cost'])
+              : bundle.costs.fold<double>(0, (sum, cost) => sum + _amount(cost['total_cost']));
 
           return SafeArea(
             child: Column(
@@ -1219,11 +1509,12 @@ class _JobOrderDetailsPageState extends State<_JobOrderDetailsPage> {
                             _DetailLine(label: 'Phone', value: _string(vendor?['vendor_phone']).isEmpty ? '-' : _string(vendor?['vendor_phone'])),
                             _DetailLine(label: 'Rating', value: _string(vendor?['vendor_rating']).isEmpty ? '-' : _string(vendor?['vendor_rating'])),
                             const SizedBox(height: 10),
-                            OutlinedButton.icon(
-                              onPressed: () => _openAssignVendor(bundle),
-                              icon: const Icon(Icons.assignment_ind_outlined),
-                              label: Text(vendor == null ? 'Assign Vendor' : 'Change Vendor'),
-                            ),
+                            if (widget.allowVendorReassign)
+                              OutlinedButton.icon(
+                                onPressed: () => _openAssignVendor(bundle),
+                                icon: const Icon(Icons.assignment_ind_outlined),
+                                label: Text(vendor == null ? 'Assign Vendor' : 'Change Vendor'),
+                              ),
                           ],
                         ),
                       ),
@@ -1233,9 +1524,19 @@ class _JobOrderDetailsPageState extends State<_JobOrderDetailsPage> {
                         icon: Icons.payments_outlined,
                         child: Column(
                           children: [
-                            _DetailLine(label: 'Estimated Cost', value: _money(job['estimated_cost'])),
-                            _DetailLine(label: 'Actual Cost', value: _money(actualCost)),
-                            _DetailLine(label: 'Cost Records', value: '${bundle.costs.length}'),
+                            _DetailLine(label: 'Total Cost', value: _money(totalCost)),
+                            _DetailLine(label: 'Service Cost Records', value: '${bundle.costs.length}'),
+                            if (bundle.costs.length > 1)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 8),
+                                child: Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: Text(
+                                    'This job order has ${bundle.costs.length} service cost records. Tap View Cost to review each one clearly.',
+                                    style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+                                  ),
+                                ),
+                              ),
                           ],
                         ),
                       ),
@@ -1304,37 +1605,38 @@ class _JobOrderDetailsPageState extends State<_JobOrderDetailsPage> {
                     ],
                   ),
                 ),
-                SafeArea(
-                  top: false,
-                  minimum: const EdgeInsets.fromLTRB(16, 10, 16, 16),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: _pickAndUpload,
-                          icon: const Icon(Icons.upload_file_outlined),
-                          label: const Text('Upload'),
+                if ((widget.leaserId ?? '').trim().isNotEmpty)
+                  SafeArea(
+                    top: false,
+                    minimum: const EdgeInsets.fromLTRB(16, 10, 16, 16),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: _pickAndUpload,
+                            icon: const Icon(Icons.upload_file_outlined),
+                            label: const Text('Upload'),
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: () => _showCostDialog(bundle),
-                          icon: const Icon(Icons.receipt_long_outlined),
-                          label: const Text('View Cost'),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: () => _showCostDialog(bundle),
+                            icon: const Icon(Icons.receipt_long_outlined),
+                            label: const Text('View Cost'),
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: FilledButton.icon(
-                          onPressed: () => _openUpdateStatus(bundle),
-                          icon: const Icon(Icons.update_rounded),
-                          label: const Text('Update Status'),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: FilledButton.icon(
+                            onPressed: () => _openUpdateStatus(bundle),
+                            icon: const Icon(Icons.update_rounded),
+                            label: const Text('Update Status'),
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
-                ),
               ],
             ),
           );
@@ -1367,10 +1669,12 @@ class _UpdateJobStatusPage extends StatefulWidget {
   const _UpdateJobStatusPage({
     required this.service,
     required this.job,
+    required this.availableStatuses,
   });
 
   final JobOrderModuleService service;
   final Map<String, dynamic> job;
+  final List<String> availableStatuses;
 
   @override
   State<_UpdateJobStatusPage> createState() => _UpdateJobStatusPageState();
@@ -1458,7 +1762,7 @@ class _UpdateJobStatusPageState extends State<_UpdateJobStatusPage> {
             title: 'New Status',
             icon: Icons.sync_alt_rounded,
             child: Column(
-              children: _statuses
+              children: widget.availableStatuses
                   .map(
                     (status) => Padding(
                   padding: const EdgeInsets.only(bottom: 10),
@@ -2098,7 +2402,7 @@ class _JobSqlErrorView extends StatelessWidget {
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(14),
-            color: Colors.black.withOpacity(0.05),
+            color: Colors.black.withValues(alpha: 0.05),
           ),
           child: const Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -2144,8 +2448,34 @@ class _PickedJobFile {
 
 String _string(dynamic value) => value == null ? '' : value.toString().trim();
 
+double _amount(dynamic value) {
+  if (value == null) return 0;
+  if (value is num) return value.toDouble();
+  return double.tryParse(value.toString()) ?? 0;
+}
+
+Map<String, double> _costTotalsByJob(List<Map<String, dynamic>> costs) {
+  final totals = <String, double>{};
+  for (final cost in costs) {
+    final jobOrderId = _string(cost['job_order_id']);
+    if (jobOrderId.isEmpty) continue;
+    totals[jobOrderId] = (totals[jobOrderId] ?? 0) + _amount(cost['total_cost']);
+  }
+  return totals;
+}
+
+Map<String, int> _costCountsByJob(List<Map<String, dynamic>> costs) {
+  final counts = <String, int>{};
+  for (final cost in costs) {
+    final jobOrderId = _string(cost['job_order_id']);
+    if (jobOrderId.isEmpty) continue;
+    counts[jobOrderId] = (counts[jobOrderId] ?? 0) + 1;
+  }
+  return counts;
+}
+
 String _money(dynamic value) {
-  final number = value is num ? value.toDouble() : double.tryParse(value.toString()) ?? 0;
+  final number = _amount(value);
   return 'RM ${number.toStringAsFixed(2)}';
 }
 
@@ -2218,4 +2548,24 @@ String _fileSizeLabel(int bytes) {
   final mb = kb / 1024;
   return '${mb.toStringAsFixed(1)} MB';
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 

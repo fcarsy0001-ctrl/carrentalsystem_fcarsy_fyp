@@ -5,9 +5,10 @@ import '../services/fleet_admin_service.dart';
 import 'widgets/admin_ui.dart';
 
 class VendorCostAdminPage extends StatelessWidget {
-  const VendorCostAdminPage({super.key, this.embedded = false});
+  const VendorCostAdminPage({super.key, this.embedded = false, this.showHeader = true});
 
   final bool embedded;
+  final bool showHeader;
 
   @override
   Widget build(BuildContext context) {
@@ -26,13 +27,13 @@ class VendorCostAdminPage extends StatelessWidget {
         length: tabs.length,
         child: Column(
           children: [
-            const AdminModuleHeader(
-              icon: Icons.inventory_2_outlined,
-              title: 'Vendors & Cost',
-              subtitle: 'Manage service providers and track maintenance spending in one place.',
-            ),
+            if (showHeader)
+              const AdminModuleHeader(
+                icon: Icons.inventory_2_outlined,
+                title: 'Vendors & Cost',
+                subtitle: 'Manage service providers and track maintenance spending in one place.',
+              ),
             TabBar(
-              isScrollable: true,
               tabs: tabs,
             ),
             const Divider(height: 1),
@@ -49,7 +50,7 @@ class VendorCostAdminPage extends StatelessWidget {
       child: Scaffold(
         appBar: AppBar(
           title: const Text('Vendors & Cost'),
-          bottom: TabBar(isScrollable: true, tabs: tabs),
+          bottom: TabBar(tabs: tabs),
         ),
         body: TabBarView(children: views),
       ),
@@ -78,7 +79,7 @@ class _VendorTabState extends State<_VendorTab> {
   }
 
   Future<void> _refresh() async {
-    setState(() => _future = _service.fetchVendors());
+    setState(() { _future = _service.fetchVendors(); });
     await _future;
   }
 
@@ -141,6 +142,10 @@ class _VendorTabState extends State<_VendorTab> {
         }
 
         final rows = snapshot.data ?? const [];
+        final managedRows = rows.where((vendor) {
+          final status = (vendor['vendor_status'] ?? '').toString().trim().toLowerCase();
+          return status != 'pending' && status != 'rejected';
+        }).toList();
         return Column(
           children: [
             Padding(
@@ -167,44 +172,63 @@ class _VendorTabState extends State<_VendorTab> {
                 child: ListView(
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
                   children: [
-                    if (rows.isEmpty)
-                      const _VendorEmptyCard(message: 'No vendors yet. Add the workshops or service providers your admin team will assign to job orders.')
+                    if (managedRows.isEmpty)
+                      const _VendorEmptyCard(message: 'No active vendors yet. Approve vendor applications first, then manage them here.')
                     else
-                      ...rows.map((vendor) {
+                      ...managedRows.map((vendor) {
                         final vendorId = (vendor['vendor_id'] ?? '').toString();
                         final rating = vendor['vendor_rating'] == null ? '0.0' : vendor['vendor_rating'].toString();
                         return Padding(
                           padding: const EdgeInsets.only(bottom: 10),
                           child: AdminCard(
-                            child: ListTile(
-                              title: Text(
-                                (vendor['vendor_name'] ?? 'Vendor').toString(),
-                                style: const TextStyle(fontWeight: FontWeight.w800),
-                              ),
-                              subtitle: Text(
-                                'ID: $vendorId\n'
-                                'Category: ${(vendor['service_category'] ?? '-').toString()}\n'
-                                'Contact: ${(vendor['contact_person'] ?? '-').toString()}\n'
-                                'Phone: ${(vendor['vendor_phone'] ?? '-').toString()}  |  Rating: $rating',
-                              ),
-                              isThreeLine: true,
-                              trailing: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  AdminStatusChip(status: (vendor['vendor_status'] ?? '-').toString()),
-                                  PopupMenuButton<String>(
-                                    onSelected: (value) {
-                                      if (value == 'edit') _openUpsert(initial: vendor);
-                                      if (value == 'delete') _delete(vendorId);
-                                    },
-                                    itemBuilder: (_) => const [
-                                      PopupMenuItem(value: 'edit', child: Text('Edit')),
-                                      PopupMenuItem(value: 'delete', child: Text('Delete')),
-                                    ],
-                                  ),
-                                ],
-                              ),
+                            child: InkWell(
                               onTap: () => _openUpsert(initial: vendor),
+                              child: Padding(
+                                padding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            (vendor['vendor_name'] ?? 'Vendor').toString(),
+                                            style: const TextStyle(fontWeight: FontWeight.w800),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Column(
+                                          crossAxisAlignment: CrossAxisAlignment.end,
+                                          children: [
+                                            AdminStatusChip(status: (vendor['vendor_status'] ?? '-').toString()),
+                                            PopupMenuButton<String>(
+                                              onSelected: (value) {
+                                                if (value == 'edit') _openUpsert(initial: vendor);
+                                                if (value == 'delete') _delete(vendorId);
+                                              },
+                                              itemBuilder: (_) => const [
+                                                PopupMenuItem(value: 'edit', child: Text('Edit')),
+                                                PopupMenuItem(value: 'delete', child: Text('Delete')),
+                                              ],
+                                            ),
+                                          ],
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Text('ID: $vendorId'),
+                                    const SizedBox(height: 2),
+                                    Text('Category: ${(vendor['service_category'] ?? '-').toString()}'),
+                                    const SizedBox(height: 2),
+                                    Text('Contact: ${(vendor['contact_person'] ?? '-').toString()}'),
+                                    const SizedBox(height: 2),
+                                    Text('Phone: ${(vendor['vendor_phone'] ?? '-').toString()}'),
+                                    const SizedBox(height: 2),
+                                    Text('Rating: $rating'),
+                                  ],
+                                ),
+                              ),
                             ),
                           ),
                         );
@@ -254,7 +278,7 @@ class _ServiceCostTabState extends State<_ServiceCostTab> {
   }
 
   Future<void> _refresh() async {
-    setState(() => _future = _load());
+    setState(() { _future = _load(); });
     await _future;
   }
 
@@ -371,39 +395,77 @@ class _ServiceCostTabState extends State<_ServiceCostTab> {
                         final total = _money(cost['total_cost']);
                         final labour = _money(cost['labour_cost']);
                         final parts = _money(cost['parts_cost']);
+                        final misc = _money(cost['misc_cost']);
+                        final tax = _money(cost['tax_cost']);
+                        final invoiceRef = (cost['invoice_ref'] ?? '').toString().trim();
+                        final notes = (cost['notes'] ?? '').toString().trim();
 
                         return Padding(
                           padding: const EdgeInsets.only(bottom: 10),
                           child: AdminCard(
-                            child: ListTile(
-                              title: Text(
-                                'Cost Record $costId',
-                                style: const TextStyle(fontWeight: FontWeight.w800),
-                              ),
-                              subtitle: Text(
-                                'Job Order: ${(job?['job_order_id'] ?? cost['job_order_id'] ?? '-').toString()}\n'
-                                'Vendor: ${_service.vendorLabel(vendor)}\n'
-                                'Service Date: ${_tabDateText(cost['service_date'])}\n'
-                                'Labour: $labour  |  Parts: $parts  |  Total: $total',
-                              ),
-                              isThreeLine: true,
-                              trailing: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  AdminStatusChip(status: (cost['payment_status'] ?? '-').toString()),
-                                  PopupMenuButton<String>(
-                                    onSelected: (value) {
-                                      if (value == 'edit') _openUpsert(bundle, initial: cost);
-                                      if (value == 'delete') _delete(costId);
-                                    },
-                                    itemBuilder: (_) => const [
-                                      PopupMenuItem(value: 'edit', child: Text('Edit')),
-                                      PopupMenuItem(value: 'delete', child: Text('Delete')),
-                                    ],
-                                  ),
-                                ],
-                              ),
+                            child: InkWell(
                               onTap: () => _openUpsert(bundle, initial: cost),
+                              child: Padding(
+                                padding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            'Cost Record $costId',
+                                            style: const TextStyle(fontWeight: FontWeight.w800),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Column(
+                                          crossAxisAlignment: CrossAxisAlignment.end,
+                                          children: [
+                                            AdminStatusChip(status: (cost['payment_status'] ?? '-').toString()),
+                                            PopupMenuButton<String>(
+                                              onSelected: (value) {
+                                                if (value == 'edit') _openUpsert(bundle, initial: cost);
+                                                if (value == 'delete') _delete(costId);
+                                              },
+                                              itemBuilder: (_) => const [
+                                                PopupMenuItem(value: 'edit', child: Text('Edit')),
+                                                PopupMenuItem(value: 'delete', child: Text('Delete')),
+                                              ],
+                                            ),
+                                          ],
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Text('Job Order: ${(job?['job_order_id'] ?? cost['job_order_id'] ?? '-').toString()}'),
+                                    const SizedBox(height: 2),
+                                    Text('Vendor: ${_service.vendorLabel(vendor)}'),
+                                    const SizedBox(height: 2),
+                                    Text('Service Date: ${_tabDateText(cost['service_date'])}'),
+                                    const SizedBox(height: 8),
+                                    Text('Labour: $labour'),
+                                    const SizedBox(height: 2),
+                                    Text('Parts: $parts'),
+                                    const SizedBox(height: 2),
+                                    Text('Misc: $misc'),
+                                    const SizedBox(height: 2),
+                                    Text('Tax: $tax'),
+                                    const SizedBox(height: 2),
+                                    Text('Invoice: ${invoiceRef.isEmpty ? '-' : invoiceRef}'),
+                                    if (notes.isNotEmpty) ...[
+                                      const SizedBox(height: 2),
+                                      Text('Notes: $notes'),
+                                    ],
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      'Total: $total',
+                                      style: const TextStyle(fontWeight: FontWeight.w700),
+                                    ),
+                                  ],
+                                ),
+                              ),
                             ),
                           ),
                         );
@@ -449,6 +511,7 @@ class _VendorFormPageState extends State<_VendorFormPage> {
   final _phoneController = TextEditingController();
   final _emailController = TextEditingController();
   final _addressController = TextEditingController();
+  final _pricingController = TextEditingController();
   final _ratingController = TextEditingController(text: '0');
 
   bool _saving = false;
@@ -465,6 +528,7 @@ class _VendorFormPageState extends State<_VendorFormPage> {
       _phoneController.text = (initial['vendor_phone'] ?? '').toString();
       _emailController.text = (initial['vendor_email'] ?? '').toString();
       _addressController.text = (initial['vendor_address'] ?? '').toString();
+      _pricingController.text = (initial['pricing_structure'] ?? '').toString();
       _ratingController.text = (initial['vendor_rating'] ?? 0).toString();
       _status = (initial['vendor_status'] ?? 'Active').toString();
     }
@@ -478,6 +542,7 @@ class _VendorFormPageState extends State<_VendorFormPage> {
     _phoneController.dispose();
     _emailController.dispose();
     _addressController.dispose();
+    _pricingController.dispose();
     _ratingController.dispose();
     super.dispose();
   }
@@ -487,7 +552,8 @@ class _VendorFormPageState extends State<_VendorFormPage> {
 
     setState(() => _saving = true);
     try {
-      await widget.service.upsertVendor(
+      final service = widget.service as dynamic;
+      await service.upsertVendor(
         vendorId: widget.initial?['vendor_id']?.toString(),
         vendorName: _nameController.text,
         serviceCategory: _categoryController.text,
@@ -495,6 +561,7 @@ class _VendorFormPageState extends State<_VendorFormPage> {
         phone: _phoneController.text,
         email: _emailController.text,
         address: _addressController.text,
+        pricingStructure: _pricingController.text,
         rating: double.tryParse(_ratingController.text.trim()) ?? 0,
         status: _status,
       );
@@ -537,28 +604,48 @@ class _VendorFormPageState extends State<_VendorFormPage> {
             TextFormField(
               controller: _contactController,
               decoration: const InputDecoration(labelText: 'Contact Person'),
+              validator: (value) => (value == null || value.trim().isEmpty) ? 'Required' : null,
             ),
             const SizedBox(height: 10),
             TextFormField(
               controller: _phoneController,
               decoration: const InputDecoration(labelText: 'Phone'),
+              validator: (value) => (value == null || value.trim().isEmpty) ? 'Required' : null,
             ),
             const SizedBox(height: 10),
             TextFormField(
               controller: _emailController,
               decoration: const InputDecoration(labelText: 'Email'),
+              validator: (value) {
+                if (value == null || value.trim().isEmpty) return 'Required';
+                if (!value.contains('@')) return 'Enter a valid email';
+                return null;
+              },
             ),
             const SizedBox(height: 10),
             TextFormField(
               controller: _addressController,
               maxLines: 3,
               decoration: const InputDecoration(labelText: 'Address'),
+              validator: (value) => (value == null || value.trim().isEmpty) ? 'Required' : null,
+            ),
+            const SizedBox(height: 10),
+            TextFormField(
+              controller: _pricingController,
+              maxLines: 3,
+              decoration: const InputDecoration(labelText: 'Pricing Structure'),
+              validator: (value) => (value == null || value.trim().isEmpty) ? 'Required' : null,
             ),
             const SizedBox(height: 10),
             TextFormField(
               controller: _ratingController,
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
               decoration: const InputDecoration(labelText: 'Rating'),
+              validator: (value) {
+                if (value == null || value.trim().isEmpty) return 'Required';
+                if (double.tryParse(value.trim()) == null) return 'Enter a valid number';
+                return null;
+              },
             ),
             const SizedBox(height: 10),
             DropdownButtonFormField<String>(
@@ -713,10 +800,10 @@ class _ServiceCostFormPageState extends State<_ServiceCostFormPage> {
               items: widget.jobOrders
                   .map(
                     (job) => DropdownMenuItem<String>(
-                      value: job['job_order_id'].toString(),
-                      child: Text('${(job['job_order_id'] ?? '').toString()} - ${(job['job_type'] ?? '').toString()}'),
-                    ),
-                  )
+                  value: job['job_order_id'].toString(),
+                  child: Text('${(job['job_order_id'] ?? '').toString()} - ${(job['job_type'] ?? '').toString()}'),
+                ),
+              )
                   .toList(),
               onChanged: (value) => setState(() => _jobOrderId = value),
               validator: (value) => (value == null || value.trim().isEmpty) ? 'Required' : null,
@@ -728,7 +815,7 @@ class _ServiceCostFormPageState extends State<_ServiceCostFormPage> {
               items: [
                 const DropdownMenuItem<String?>(value: null, child: Text('Unassigned')),
                 ...widget.vendors.map(
-                  (vendor) => DropdownMenuItem<String?>(
+                      (vendor) => DropdownMenuItem<String?>(
                     value: vendor['vendor_id'].toString(),
                     child: Text(widget.service.vendorLabel(vendor)),
                   ),
@@ -891,4 +978,22 @@ String _tabDateText(dynamic raw) {
   if (value == null) return '-';
   return '${value.day}/${value.month}/${value.year}';
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 

@@ -33,12 +33,15 @@ create table if not exists public.vehicle_location_history (
 
 create table if not exists public.vendor (
   vendor_id text primary key,
+  user_id character varying references public.app_user(user_id) on delete set null,
+  auth_uid uuid,
   vendor_name text not null,
   service_category text not null,
   contact_person text,
   vendor_phone text,
   vendor_email text,
   vendor_address text,
+  pricing_structure text,
   vendor_rating numeric not null default 0,
   vendor_status text not null default 'Active',
   created_at timestamp with time zone not null default now()
@@ -114,6 +117,11 @@ create table if not exists public.service_cost (
     return '$y-$m-$d';
   }
 
+  String newVendorId() {
+    final micros = DateTime.now().microsecondsSinceEpoch.toString();
+    return 'V${micros.substring(micros.length - 5)}';
+  }
+
   String newId(String prefix) {
     final cleaned = prefix.trim().toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
     final safePrefix = cleaned.isEmpty ? 'ID' : cleaned;
@@ -168,10 +176,11 @@ create table if not exists public.service_cost (
     required String phone,
     required String email,
     required String address,
+    required String pricingStructure,
     required double rating,
     required String status,
   }) async {
-    final id = _s(vendorId).isEmpty ? newId('VEN') : _s(vendorId);
+    final id = _s(vendorId).isEmpty ? newVendorId() : _s(vendorId);
     final payload = <String, dynamic>{
       'vendor_name': vendorName.trim(),
       'service_category': serviceCategory.trim(),
@@ -179,6 +188,7 @@ create table if not exists public.service_cost (
       'vendor_phone': phone.trim().isEmpty ? null : phone.trim(),
       'vendor_email': email.trim().isEmpty ? null : email.trim(),
       'vendor_address': address.trim().isEmpty ? null : address.trim(),
+      'pricing_structure': pricingStructure.trim().isEmpty ? null : pricingStructure.trim(),
       'vendor_rating': rating,
       'vendor_status': status.trim(),
     };
@@ -194,6 +204,28 @@ create table if not exists public.service_cost (
     await _client.from('vendor').delete().eq('vendor_id', vendorId);
   }
 
+  Future<void> updateVendorStatus({
+    required String vendorId,
+    required String status,
+    String? rejectRemark,
+  }) async {
+    final payload = <String, dynamic>{
+      'vendor_status': status.trim(),
+      'vendor_reject_remark': _s(rejectRemark).isEmpty ? null : _s(rejectRemark),
+      'reviewed_at': DateTime.now().toUtc().toIso8601String(),
+    };
+
+    try {
+      await _client.from('vendor').update(payload).eq('vendor_id', vendorId.trim());
+    } catch (error) {
+      final message = error.toString().toLowerCase();
+      if (message.contains('vendor_reject_remark') || message.contains('reviewed_at') || message.contains('column')) {
+        await _client.from('vendor').update({'vendor_status': status.trim()}).eq('vendor_id', vendorId.trim());
+      } else {
+        rethrow;
+      }
+    }
+  }
   Future<List<Map<String, dynamic>>> fetchJobOrders() async {
     final response = await _client
         .from('service_job_order')
@@ -284,11 +316,20 @@ create table if not exists public.service_cost (
     await _client.from('maintenance_schedule').delete().eq('schedule_id', scheduleId);
   }
 
-  Future<List<Map<String, dynamic>>> fetchServiceCosts() async {
-    final response = await _client
-        .from('service_cost')
-        .select('*')
-        .order('created_at', ascending: false);
+  Future<List<Map<String, dynamic>>> fetchServiceCosts({
+    String? vendorId,
+    String? jobOrderId,
+  }) async {
+    var query = _client.from('service_cost').select('*');
+
+    if (_s(vendorId).isNotEmpty) {
+      query = query.eq('vendor_id', vendorId!.trim());
+    }
+    if (_s(jobOrderId).isNotEmpty) {
+      query = query.eq('job_order_id', jobOrderId!.trim());
+    }
+
+    final response = await query.order('created_at', ascending: false);
     return _rows(response);
   }
 
@@ -406,3 +447,11 @@ create table if not exists public.service_cost (
 
   int readInt(Map<String, dynamic> row, String key) => _i(row[key]);
 }
+
+
+
+
+
+
+
+

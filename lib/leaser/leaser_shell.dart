@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../admin/service_job_orders_page.dart';
 import '../admin/vehicle_location_dashboard_page.dart';
 import '../admin/vehicle_onboarding_page.dart';
 import '../main.dart';
@@ -31,6 +32,7 @@ class LeaserShell extends StatelessWidget {
       const Tab(icon: Icon(Icons.dashboard_outlined), text: 'Dashboard'),
       const Tab(icon: Icon(Icons.directions_car_outlined), text: 'Vehicles'),
       const Tab(icon: Icon(Icons.place_outlined), text: 'Locations'),
+      const Tab(icon: Icon(Icons.build_circle_outlined), text: 'Service Jobs'),
       const Tab(icon: Icon(Icons.track_changes_outlined), text: 'Status'),
     ];
 
@@ -46,6 +48,14 @@ class LeaserShell extends StatelessWidget {
         title: 'Vehicle Locations',
         embedded: true,
         allowManageLocations: false,
+      ),
+      ServiceJobOrdersPage(
+        leaserId: leaserId,
+        embedded: true,
+        title: 'Service Jobs',
+        subtitle: 'Create and track maintenance or inspection requests for your vehicles.',
+        allowVendorReassign: true,
+        allowCancelledStatus: false,
       ),
       VehicleOnboardingStatusPage(
         leaserId: leaserId,

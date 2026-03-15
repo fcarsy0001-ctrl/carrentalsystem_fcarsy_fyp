@@ -62,41 +62,16 @@ class _VehicleLocationAdminPageState extends State<VehicleLocationAdminPage> {
   }
 
   Future<void> _addLocation() async {
-    final controller = TextEditingController();
     try {
-      final confirmed = await showDialog<bool>(
+      final name = await showDialog<String>(
         context: context,
-        builder: (_) => AlertDialog(
-          title: const Text('Add Location'),
-          content: TextField(
-            controller: controller,
-            autofocus: true,
-            decoration: const InputDecoration(
-              labelText: 'Location name / address',
-              hintText: 'e.g. TAR UMT Main Branch',
-            ),
-            minLines: 1,
-            maxLines: 3,
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Add'),
-            ),
-          ],
-        ),
+        builder: (dialogContext) => const _AddLocationDialog(),
       );
 
-      if (confirmed != true) return;
-      final name = controller.text.trim();
-      if (name.isEmpty) return;
+      if (name == null || name.trim().isEmpty) return;
 
       await _supa.from('vehicle_location').insert({
-        'location_name': name,
+        'location_name': name.trim(),
         'is_active': true,
       });
 
@@ -110,11 +85,8 @@ class _VehicleLocationAdminPageState extends State<VehicleLocationAdminPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Add failed: $error'), backgroundColor: Colors.red),
       );
-    } finally {
-      controller.dispose();
     }
   }
-
   Future<void> _toggleActive(Map<String, dynamic> row, bool value) async {
     final id = (row['location_id'] ?? '').toString().trim();
     final name = (row['location_name'] ?? '').toString().trim();
@@ -124,18 +96,18 @@ class _VehicleLocationAdminPageState extends State<VehicleLocationAdminPage> {
     if (!value) {
       final confirmed = await showDialog<bool>(
         context: context,
-        builder: (_) => AlertDialog(
+        builder: (dialogContext) => AlertDialog(
           title: const Text('Deactivate branch?'),
           content: Text(
             'Vehicles assigned to "$name" will no longer be rentable. Any currently available vehicles there will be marked Inactive.',
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(context, false),
+              onPressed: () => Navigator.of(dialogContext).pop(false),
               child: const Text('Cancel'),
             ),
             FilledButton(
-              onPressed: () => Navigator.pop(context, true),
+              onPressed: () => Navigator.of(dialogContext).pop(true),
               child: const Text('Deactivate'),
             ),
           ],
@@ -176,16 +148,16 @@ class _VehicleLocationAdminPageState extends State<VehicleLocationAdminPage> {
 
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Delete location?'),
         content: Text('Delete: $name'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, false),
+            onPressed: () => Navigator.of(dialogContext).pop(false),
             child: const Text('Cancel'),
           ),
           FilledButton(
-            onPressed: () => Navigator.pop(context, true),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
             child: const Text('Delete'),
           ),
         ],
@@ -356,6 +328,63 @@ create table if not exists public.vehicle_location (
         icon: const Icon(Icons.add),
         label: const Text('Add location'),
       ),
+    );
+  }
+}
+
+class _AddLocationDialog extends StatefulWidget {
+  const _AddLocationDialog();
+
+  @override
+  State<_AddLocationDialog> createState() => _AddLocationDialogState();
+}
+
+class _AddLocationDialogState extends State<_AddLocationDialog> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final value = _controller.text.trim();
+    Navigator.of(context).pop(value.isEmpty ? null : value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Add Location'),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        decoration: const InputDecoration(
+          labelText: 'Location name / address',
+          hintText: 'e.g. TAR UMT Main Branch',
+        ),
+        minLines: 1,
+        maxLines: 3,
+        textInputAction: TextInputAction.done,
+        onSubmitted: (_) => _submit(),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _submit,
+          child: const Text('Add'),
+        ),
+      ],
     );
   }
 }
