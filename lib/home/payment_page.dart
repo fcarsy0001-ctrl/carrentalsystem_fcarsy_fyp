@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../services/booking_hold_service.dart';
 import '../shell/main_shell.dart';
 import 'my_orders_page.dart';
 
@@ -71,9 +73,20 @@ class _PaymentPageState extends State<PaymentPage> {
   final _cardCvvCtrl = TextEditingController();
 
   final _tngRefCtrl = TextEditingController();
+  Timer? _holdTicker;
+  DateTime? _holdExpiry;
+  bool _holdExpired = false;
+  bool _finishingExpiredHold = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadHoldTimer();
+  }
 
   @override
   void dispose() {
+    _holdTicker?.cancel();
     _cardNameCtrl.dispose();
     _cardNoCtrl.dispose();
     _cardExpCtrl.dispose();
@@ -114,6 +127,77 @@ class _PaymentPageState extends State<PaymentPage> {
 
   String _dateOnly(DateTime d) =>
       '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+  BookingHoldService get _holdSvc => BookingHoldService(_supa);
+
+  bool get _holdStillActive => !_holdExpired && _holdExpiry != null && _holdExpiry!.isAfter(DateTime.now());
+
+  Duration get _holdRemaining {
+    final expiry = _holdExpiry;
+    if (expiry == null) return Duration.zero;
+    final diff = expiry.difference(DateTime.now());
+    return diff.isNegative ? Duration.zero : diff;
+  }
+
+  String get _holdText => _holdExpiry == null ? '-' : _holdSvc.formatRemaining(_holdRemaining);
+
+  Future<void> _loadHoldTimer() async {
+    final row = await _holdSvc.fetchBookingMeta(widget.bookingId);
+    if (!mounted || row == null) return;
+    final expiry = _holdSvc.parseHoldExpiryFromRow(row);
+    final active = _holdSvc.isActiveHoldRow(row);
+    setState(() {
+      _holdExpiry = expiry;
+      _holdExpired = !active && _holdSvc.normalizeStatus(row['booking_status']) == 'holding';
+    });
+    if (active) {
+      _startHoldTicker();
+    } else if (_holdExpired) {
+      await _expireHoldAndExit(showSnack: false);
+    }
+  }
+
+  void _startHoldTicker() {
+    _holdTicker?.cancel();
+    if (_holdExpiry == null) return;
+    _holdTicker = Timer.periodic(const Duration(seconds: 1), (_) async {
+      if (!mounted) return;
+      setState(() {});
+      if (!_holdStillActive) {
+        await _expireHoldAndExit(showSnack: true);
+      }
+    });
+  }
+
+  bool _ensureHoldActive() {
+    if (_holdExpiry == null || _holdStillActive) return true;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Hold time already ended. Please make a new booking.')),
+    );
+    return false;
+  }
+
+  Future<void> _expireHoldAndExit({required bool showSnack}) async {
+    if (_finishingExpiredHold) return;
+    _finishingExpiredHold = true;
+    try {
+      await _holdSvc.expireIfNeeded(bookingId: widget.bookingId, holdExpiry: _holdExpiry);
+      _holdTicker?.cancel();
+      if (!mounted) return;
+      setState(() => _holdExpired = true);
+      if (showSnack) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('15-minute hold ended. This booking was cancelled automatically.')),
+        );
+      }
+      await Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const MyOrdersPage()),
+        (route) => false,
+      );
+    } finally {
+      _finishingExpiredHold = false;
+    }
+  }
 
   String _shortId(String prefix) {
     // Keep IDs short to avoid varchar(10) constraints.
@@ -182,6 +266,7 @@ class _PaymentPageState extends State<PaymentPage> {
   }
 
   Future<void> _doPayment() async {
+    if (!_ensureHoldActive()) return;
     setState(() => _paying = true);
     final method = _methodText(_method);
     final amount = widget.subTotal + widget.securityDeposit;
@@ -479,6 +564,29 @@ Widget _segButton({required String text, required bool selected, required VoidCa
             child: ListView(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
               children: [
+                if (_holdExpiry != null)
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.hourglass_top_rounded, color: Colors.orange),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              _holdStillActive
+                                  ? 'Complete payment within $_holdText to keep this car slot.'
+                                  : 'Hold expired. This booking can no longer continue.',
+                              style: TextStyle(
+                                color: _holdStillActive ? Colors.orange.shade800 : Colors.red.shade700,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(12),

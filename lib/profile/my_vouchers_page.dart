@@ -16,6 +16,7 @@ class _MyVouchersPageState extends State<MyVouchersPage> {
 
   late Future<List<Map<String, dynamic>>> _myFuture;
   late Future<List<Map<String, dynamic>>> _promoFuture;
+  final Set<String> _claimingPromoIds = <String>{};
 
   @override
   void initState() {
@@ -56,7 +57,12 @@ class _MyVouchersPageState extends State<MyVouchersPage> {
   Future<void> _claimPromo(Map<String, dynamic> promo) async {
     final promoId = (promo['promo_id'] ?? '').toString();
     final promoName = _promoTitle(promo);
-    if (promoId.isEmpty) return;
+    if (promoId.isEmpty || _claimingPromoIds.contains(promoId)) return;
+
+    setState(() {
+      _claimingPromoIds.add(promoId);
+    });
+
     try {
       final result = await _svc.claimVoucherWithStatus(promoId: promoId);
       if (!mounted) return;
@@ -72,6 +78,11 @@ class _MyVouchersPageState extends State<MyVouchersPage> {
       if (!mounted) return;
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text('Claim failed: $e')));
+    } finally {
+      if (!mounted) return;
+      setState(() {
+        _claimingPromoIds.remove(promoId);
+      });
     }
   }
 
@@ -162,10 +173,7 @@ class _MyVouchersPageState extends State<MyVouchersPage> {
                         }
 
                         final promos = (promoSnap.data ?? const [])
-                            .where((p) {
-                              final id = (p['promo_id'] ?? '').toString();
-                              return id.isNotEmpty && !claimedPromoIds.contains(id);
-                            })
+                            .where((p) => (p['promo_id'] ?? '').toString().isNotEmpty)
                             .toList();
 
                         if (promos.isEmpty) {
@@ -177,6 +185,9 @@ class _MyVouchersPageState extends State<MyVouchersPage> {
 
                         return Column(
                           children: promos.map((promo) {
+                            final promoId = (promo['promo_id'] ?? '').toString();
+                            final isClaiming = _claimingPromoIds.contains(promoId);
+                            final isClaimed = claimedPromoIds.contains(promoId);
                             return Card(
                               child: ListTile(
                                 title: Text(
@@ -185,8 +196,16 @@ class _MyVouchersPageState extends State<MyVouchersPage> {
                                 ),
                                 subtitle: Text(_promoSubtitle(promo)),
                                 trailing: TextButton(
-                                  onPressed: () => _claimPromo(promo),
-                                  child: const Text('Claim'),
+                                  onPressed: isClaimed || isClaiming
+                                      ? null
+                                      : () => _claimPromo(promo),
+                                  child: Text(
+                                    isClaiming
+                                        ? 'Claiming...'
+                                        : isClaimed
+                                            ? 'Claimed'
+                                            : 'Claim',
+                                  ),
                                 ),
                               ),
                             );

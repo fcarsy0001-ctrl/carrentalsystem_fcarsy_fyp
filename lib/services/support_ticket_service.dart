@@ -138,6 +138,124 @@ class SupportTicketService {
     return '${clean.substring(0, 80)}...';
   }
 
+  static const String _reviewMarkerPrefix = '[STAFF_REVIEW:';
+  static const String _reviewDismissedMarker = '[STAFF_REVIEW_DISMISSED]';
+
+  bool _isHiddenSupportMetaMessage(Map<String, dynamic> row) {
+    final message = _s(row['message']);
+    return message.startsWith(_reviewMarkerPrefix) || message == _reviewDismissedMarker;
+  }
+
+  int? _extractReviewMarkerRating(dynamic value) {
+    final raw = _s(value);
+    if (!raw.startsWith(_reviewMarkerPrefix) || !raw.endsWith(']')) return null;
+    final number = raw.substring(_reviewMarkerPrefix.length, raw.length - 1);
+    return _parseRating(number);
+  }
+
+  Future<void> _insertHiddenUserMetaMessage({
+    required String ticketId,
+    required String message,
+  }) async {
+    final actor = await _getCurrentActor();
+    final now = DateTime.now().toUtc().toIso8601String();
+    await _client.from('support_message').insert(<String, dynamic>{
+      'ticket_id': ticketId,
+      'sender_auth_uid': _s(actor['auth_uid']),
+      'sender_role': 'User',
+      'sender_name': _s(actor['sender_name']).isEmpty ? 'User' : _s(actor['sender_name']),
+      'message': message,
+      'created_at': now,
+    });
+  }
+
+  int? _parseRating(dynamic value) {
+    if (value == null) return null;
+    if (value is num) {
+      final n = value.toInt();
+      return (n >= 1 && n <= 5) ? n : null;
+    }
+    final n = int.tryParse(_s(value));
+    if (n == null || n < 1 || n > 5) return null;
+    return n;
+  }
+
+  bool _ticketHasStaffServed(Map<String, dynamic> ticket) {
+    return _s(ticket['assigned_admin_uid']).isNotEmpty ||
+        _s(ticket['assigned_admin_name']).isNotEmpty ||
+        _s(ticket['assigned_admin_role']).isNotEmpty;
+  }
+
+  Future<bool> hasStaffServed(String ticketId) async {
+    final ticket = await getTicket(ticketId);
+    if (_ticketHasStaffServed(ticket)) return true;
+
+    try {
+      final rows = await _client
+          .from('support_message')
+          .select('message_id')
+          .eq('ticket_id', ticketId)
+          .neq('sender_role', 'User')
+          .limit(1);
+      return rows is List && rows.isNotEmpty;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<int?> getTicketReview(String ticketId) async {
+    final ticket = await getTicket(ticketId);
+    final directRating = _parseRating(ticket['staff_rating']);
+    if (directRating != null) return directRating;
+
+    try {
+      final row = await _client
+          .from('support_ticket_review')
+          .select('rating')
+          .eq('ticket_id', ticketId)
+          .maybeSingle();
+      if (row != null) {
+        final stored = _parseRating((row as Map)['rating']);
+        if (stored != null) return stored;
+      }
+    } catch (_) {}
+
+    try {
+      final rows = await _client
+          .from('support_message')
+          .select('message')
+          .eq('ticket_id', ticketId)
+          .order('created_at', ascending: false);
+      if (rows is! List) return null;
+      for (final raw in rows) {
+        final row = Map<String, dynamic>.from(raw as Map);
+        final rating = _extractReviewMarkerRating(row['message']);
+        if (rating != null) return rating;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  Future<bool> isTicketReviewDismissed(String ticketId) async {
+    try {
+      final rows = await _client
+          .from('support_message')
+          .select('message')
+          .eq('ticket_id', ticketId)
+          .order('created_at', ascending: false);
+      if (rows is! List) return false;
+      for (final raw in rows) {
+        final row = Map<String, dynamic>.from(raw as Map);
+        final message = _s(row['message']);
+        if (_extractReviewMarkerRating(message) != null) return false;
+        if (message == _reviewDismissedMarker) return true;
+      }
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<Map<String, dynamic>?> getOpenTicketForCurrentUser() async {
     final user = await _requireCurrentAppUser();
     final rows = await _client
@@ -231,6 +349,7 @@ class SupportTicketService {
         .order('created_at', ascending: true)
         .map((rows) => rows
             .map((e) => Map<String, dynamic>.from(e))
+            .where((row) => !_isHiddenSupportMetaMessage(row))
             .toList()
           ..sort((a, b) => _dt(a['created_at']).compareTo(_dt(b['created_at']))));
   }
@@ -243,7 +362,10 @@ class SupportTicketService {
         .order('created_at', ascending: true);
 
     if (rows is! List) return const [];
-    return rows.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    return rows
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .where((row) => !_isHiddenSupportMetaMessage(row))
+        .toList();
   }
 
   Future<Map<String, dynamic>> createTicket({
@@ -344,19 +466,100 @@ class SupportTicketService {
 
   Future<void> closeTicket(String ticketId) async {
     final actor = await _getCurrentActor();
-    if (_s(actor['sender_role']) == 'User') {
-      throw Exception('Only admin/staff can close tickets.');
-    }
+    final ticket = await getTicket(ticketId);
+    if (_s(ticket['ticket_status']) == statusClosed) return;
 
     final now = DateTime.now().toUtc().toIso8601String();
-    await _client.from('support_ticket').update(<String, dynamic>{
+    final update = <String, dynamic>{
       'ticket_status': statusClosed,
       'closed_at': now,
       'last_message_at': now,
-      'assigned_admin_uid': _s(actor['auth_uid']),
-      'assigned_admin_name': _s(actor['sender_name']),
-      'assigned_admin_role': _s(actor['sender_role']),
-    }).eq('ticket_id', ticketId);
+    };
+
+    if (_s(actor['sender_role']) != 'User') {
+      update['assigned_admin_uid'] = _s(actor['auth_uid']);
+      update['assigned_admin_name'] = _s(actor['sender_name']);
+      update['assigned_admin_role'] = _s(actor['sender_role']);
+    }
+
+    await _client.from('support_ticket').update(update).eq('ticket_id', ticketId);
+  }
+
+  Future<void> submitTicketReview({
+    required String ticketId,
+    required int stars,
+  }) async {
+    final actor = await _getCurrentActor();
+    if (_s(actor['sender_role']) != 'User') {
+      throw Exception('Only user can submit staff review.');
+    }
+
+    final ticket = await getTicket(ticketId);
+    if (_s(ticket['ticket_status']) != statusClosed) {
+      throw Exception('You can review only after the case is closed.');
+    }
+
+    if (!await hasStaffServed(ticketId)) {
+      throw Exception('No staff has served this case yet.');
+    }
+
+    final existing = await getTicketReview(ticketId);
+    if (existing != null) return;
+
+    final rating = stars.clamp(1, 5).toInt();
+    final now = DateTime.now().toUtc().toIso8601String();
+
+    try {
+      await _client.from('support_ticket').update(<String, dynamic>{
+        'staff_rating': rating,
+        'staff_rated_at': now,
+      }).eq('ticket_id', ticketId);
+      return;
+    } catch (_) {}
+
+    try {
+      await _client.from('support_ticket_review').upsert(<String, dynamic>{
+        'ticket_id': ticketId,
+        'user_id': _s(ticket['user_id']),
+        'staff_auth_uid': _s(ticket['assigned_admin_uid']),
+        'staff_name': _s(ticket['assigned_admin_name']),
+        'staff_role': _s(ticket['assigned_admin_role']),
+        'rating': rating,
+        'created_at': now,
+        'updated_at': now,
+      }, onConflict: 'ticket_id');
+      return;
+    } catch (_) {}
+
+    await _insertHiddenUserMetaMessage(
+      ticketId: ticketId,
+      message: '$_reviewMarkerPrefix$rating]',
+    );
+  }
+
+  Future<void> dismissTicketReview(String ticketId) async {
+    final actor = await _getCurrentActor();
+    if (_s(actor['sender_role']) != 'User') {
+      throw Exception('Only user can dismiss staff review.');
+    }
+
+    final ticket = await getTicket(ticketId);
+    if (_s(ticket['ticket_status']) != statusClosed) {
+      throw Exception('You can close the review only after the case is closed.');
+    }
+
+    if (!await hasStaffServed(ticketId)) {
+      throw Exception('No staff has served this case yet.');
+    }
+
+    final existing = await getTicketReview(ticketId);
+    if (existing != null) return;
+    if (await isTicketReviewDismissed(ticketId)) return;
+
+    await _insertHiddenUserMetaMessage(
+      ticketId: ticketId,
+      message: _reviewDismissedMarker,
+    );
   }
 
   Future<void> deleteTicket(String ticketId) async {

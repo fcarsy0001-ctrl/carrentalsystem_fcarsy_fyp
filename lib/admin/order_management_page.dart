@@ -43,7 +43,7 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
     try {
       final bookingRows = await _supa
           .from('booking')
-          .select('booking_id,booking_date,rental_start,rental_end,booking_status,total_rental_amount,user_id,vehicle_id,payment_option')
+          .select('*')
           .order('booking_date', ascending: false)
           .limit(1000);
 
@@ -82,7 +82,7 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
 
     for (final r in _rows) {
       final st = (r['booking_status'] ?? '').toString().trim();
-      if (_statusFilter != 'All' && st.toLowerCase() != _statusFilter.toLowerCase()) {
+      if (_statusFilter != 'All' && _normStatus(st) != _normStatus(_statusFilter)) {
         continue;
       }
 
@@ -163,7 +163,16 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
     required String before,
     String? remark,
   }) async {
-    await _supa.from('booking').update({'booking_status': after}).eq('booking_id', bookingId);
+    try {
+      await _supa.from('booking').update({'booking_status': after}).eq('booking_id', bookingId);
+    } on PostgrestException catch (e) {
+      final msg = e.message.toLowerCase();
+      final blockedByNotificationTrigger =
+          e.code == '42501' && msg.contains('notification');
+      final cancelling = _normStatus(after) == 'cancelled';
+      if (!cancelling || !blockedByNotificationTrigger) rethrow;
+      await _supa.from('booking').update({'booking_status': 'Cancel'}).eq('booking_id', bookingId);
+    }
   }
 
   Future<void> _deactivate(Map<String, dynamic> row) async {
@@ -492,6 +501,8 @@ class _OrderDetailAdminPage extends StatefulWidget {
 class _OrderDetailAdminPageState extends State<_OrderDetailAdminPage> {
   SupabaseClient get _supa => Supabase.instance.client;
 
+  static const _evidenceSides = <String>['front', 'left', 'right', 'back'];
+
   bool _loading = true;
   String? _error;
   Map<String, dynamic>? _detail;
@@ -507,6 +518,79 @@ class _OrderDetailAdminPageState extends State<_OrderDetailAdminPage> {
     return 'RM ${n.toStringAsFixed(2)}';
   }
 
+  DateTime? _dt(dynamic v) {
+    if (v == null) return null;
+    if (v is DateTime) return v.isUtc ? v.toLocal() : v;
+    try {
+      final parsed = DateTime.parse(v.toString());
+      return parsed.isUtc ? parsed.toLocal() : parsed;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String _fmtDateTime(dynamic v, {bool withSeconds = false}) {
+    final d = _dt(v);
+    if (d == null) return '-';
+    var h = d.hour;
+    final mm = d.minute.toString().padLeft(2, '0');
+    final ss = d.second.toString().padLeft(2, '0');
+    final ap = h >= 12 ? 'pm' : 'am';
+    h %= 12;
+    if (h == 0) h = 12;
+    final time = withSeconds ? '$h:$mm:$ss$ap' : '$h:$mm$ap';
+    return '${d.day}/${d.month}/${d.year} $time';
+  }
+
+  double _moneyValue(dynamic v) {
+    return v is num ? v.toDouble() : double.tryParse(v.toString()) ?? 0;
+  }
+
+  int _bookedHours() {
+    final start = _dt(_detail?['rental_start']);
+    final end = _dt(_detail?['rental_end']);
+    if (start == null || end == null) return 0;
+    final mins = end.difference(start).inMinutes;
+    if (mins <= 0) return 0;
+    return (mins / 60).ceil();
+  }
+
+  double _baseHourlyRate() {
+    final total = _moneyValue(_detail?['total_rental_amount']);
+    final hours = _bookedHours();
+    if (total > 0 && hours > 0) return total / hours;
+    return 0;
+  }
+
+  int _overtimeHoursRoundedUp() {
+    final scheduledEnd = _dt(_detail?['rental_end']);
+    final actualDropoff = _dt(_detail?['dropoff_completed_at']) ?? _dt(_detail?['actual_dropoff_at']);
+    if (scheduledEnd == null || actualDropoff == null || !actualDropoff.isAfter(scheduledEnd)) return 0;
+    final mins = actualDropoff.difference(scheduledEnd).inMinutes;
+    if (mins <= 0) return 0;
+    return (mins / 60).ceil();
+  }
+
+  double _computedPenalty() {
+    final stored = _moneyValue(_detail?['overtime_penalty_amount']);
+    if (stored > 0) return stored;
+    final hours = _overtimeHoursRoundedUp();
+    if (hours <= 0) return 0;
+    return hours * _baseHourlyRate() * 2;
+  }
+
+  String? _evidenceUrl(String stage, String side) {
+    final raw = (_detail?['${stage}_${side}_url'] ?? '').toString().trim();
+    return raw.isEmpty ? null : raw;
+  }
+
+  bool _hasEvidence(String stage) {
+    for (final side in _evidenceSides) {
+      if ((_evidenceUrl(stage, side) ?? '').isNotEmpty) return true;
+    }
+    return false;
+  }
+
   Future<void> _load() async {
     setState(() {
       _loading = true;
@@ -519,7 +603,7 @@ class _OrderDetailAdminPageState extends State<_OrderDetailAdminPage> {
       final r = await _supa
           .from('booking')
           .select(
-            'booking_id,booking_date,rental_start,rental_end,booking_status,payment_option,total_rental_amount,dropoff_location,voucher_code,voucher_discount,user_id,vehicle_id,app_user:user_id(user_name,user_email,user_phone),vehicle:vehicle_id(vehicle_brand,vehicle_model,vehicle_plate_no,vehicle_location,leaser_id)',
+            '*, app_user:user_id(user_name,user_email,user_phone), vehicle:vehicle_id(vehicle_brand,vehicle_model,vehicle_plate_no,vehicle_location,leaser_id)',
           )
           .eq('booking_id', bookingId)
           .maybeSingle();
@@ -535,6 +619,8 @@ class _OrderDetailAdminPageState extends State<_OrderDetailAdminPage> {
   @override
   Widget build(BuildContext context) {
     final bookingId = (widget.row['booking_id'] ?? '').toString();
+    final penalty = _computedPenalty();
+    final overtimeHours = _overtimeHoursRoundedUp();
 
     return Scaffold(
       appBar: AppBar(title: Text('Order $bookingId')),
@@ -550,23 +636,34 @@ class _OrderDetailAdminPageState extends State<_OrderDetailAdminPage> {
                         _KV('Status', (_detail!['booking_status'] ?? '').toString()),
                         _KV('Amount', _money(_detail!['total_rental_amount'])),
                         _KV('Booking Date', (_detail!['booking_date'] ?? '').toString()),
-                        _KV('Rental Start', (_detail!['rental_start'] ?? '').toString()),
-                        _KV('Rental End', (_detail!['rental_end'] ?? '').toString()),
+                        _KV('Rental Start', _fmtDateTime(_detail!['rental_start'])),
+                        _KV('Rental End', _fmtDateTime(_detail!['rental_end'])),
                         _KV('Payment Option', (_detail!['payment_option'] ?? '').toString()),
                         _KV('Voucher Code', (_detail!['voucher_code'] ?? '-').toString()),
                         _KV('Voucher Discount', _money(_detail!['voucher_discount'] ?? 0)),
                         _KV('Dropoff Location', (_detail!['dropoff_location'] ?? '-').toString()),
+                        _KV('Pickup Completed At', _fmtDateTime(_detail!['pickup_completed_at'], withSeconds: true)),
+                        _KV('Drop-off Completed At', _fmtDateTime(_detail!['dropoff_completed_at'] ?? _detail!['actual_dropoff_at'], withSeconds: true)),
+                        _KV('Demo Lock State', (_detail!['lock_demo_state'] ?? '-').toString()),
+                        if (overtimeHours > 0) ...[
+                          _KV('Overtime Hours', overtimeHours.toString()),
+                          _KV('Overtime Penalty', _money(penalty)),
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 10),
+                            child: Text(
+                              'Penalty rule: every overtime hour is charged at 2x the normal hourly rate, rounded up.',
+                              style: TextStyle(color: Colors.grey.shade700),
+                            ),
+                          ),
+                        ],
                         const Divider(height: 26),
-
                         const Text('User', style: TextStyle(fontWeight: FontWeight.w900)),
                         const SizedBox(height: 6),
                         _KV('User ID', (_detail!['user_id'] ?? '').toString()),
                         _KV('Name', (((_detail!['app_user'] ?? const {}) as Map)['user_name'] ?? '-').toString()),
                         _KV('Email', (((_detail!['app_user'] ?? const {}) as Map)['user_email'] ?? '-').toString()),
                         _KV('Phone', (((_detail!['app_user'] ?? const {}) as Map)['user_phone'] ?? '-').toString()),
-
                         const Divider(height: 26),
-
                         const Text('Vehicle', style: TextStyle(fontWeight: FontWeight.w900)),
                         const SizedBox(height: 6),
                         _KV('Vehicle ID', (_detail!['vehicle_id'] ?? '').toString()),
@@ -575,6 +672,46 @@ class _OrderDetailAdminPageState extends State<_OrderDetailAdminPage> {
                         _KV('Plate', (((_detail!['vehicle'] ?? const {}) as Map)['vehicle_plate_no'] ?? '-').toString()),
                         _KV('Leaser ID', (((_detail!['vehicle'] ?? const {}) as Map)['leaser_id'] ?? '-').toString()),
                         _KV('Location', (((_detail!['vehicle'] ?? const {}) as Map)['vehicle_location'] ?? '-').toString()),
+                        if (_hasEvidence('pickup')) ...[
+                          const Divider(height: 26),
+                          const Text('Pickup Inspection Photos', style: TextStyle(fontWeight: FontWeight.w900)),
+                          const SizedBox(height: 10),
+                          Text(
+                            'Review the 4 pickup photos captured before the trip was officially ongoing.',
+                            style: TextStyle(color: Colors.grey.shade700),
+                          ),
+                          const SizedBox(height: 10),
+                          Wrap(
+                            spacing: 10,
+                            runSpacing: 10,
+                            children: _evidenceSides
+                                .map((side) => _AdminEvidenceCard(
+                                      label: side[0].toUpperCase() + side.substring(1),
+                                      imageUrl: _evidenceUrl('pickup', side),
+                                    ))
+                                .toList(),
+                          ),
+                        ],
+                        if (_hasEvidence('dropoff')) ...[
+                          const Divider(height: 26),
+                          const Text('Drop-off Inspection Photos', style: TextStyle(fontWeight: FontWeight.w900)),
+                          const SizedBox(height: 10),
+                          Text(
+                            'Staff/Admin should compare these against the pickup photos to check for damage.',
+                            style: TextStyle(color: Colors.grey.shade700),
+                          ),
+                          const SizedBox(height: 10),
+                          Wrap(
+                            spacing: 10,
+                            runSpacing: 10,
+                            children: _evidenceSides
+                                .map((side) => _AdminEvidenceCard(
+                                      label: side[0].toUpperCase() + side.substring(1),
+                                      imageUrl: _evidenceUrl('dropoff', side),
+                                    ))
+                                .toList(),
+                          ),
+                        ],
                       ],
                     ),
     );
@@ -596,6 +733,46 @@ class _KV extends StatelessWidget {
         children: [
           SizedBox(width: 130, child: Text(k, style: TextStyle(color: Colors.grey.shade700))),
           Expanded(child: Text(v.isEmpty ? '-' : v, style: const TextStyle(fontWeight: FontWeight.w700))),
+        ],
+      ),
+    );
+  }
+}
+
+class _AdminEvidenceCard extends StatelessWidget {
+  const _AdminEvidenceCard({
+    required this.label,
+    required this.imageUrl,
+  });
+
+  final String label;
+  final String? imageUrl;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasUrl = (imageUrl ?? '').trim().isNotEmpty;
+    return SizedBox(
+      width: 165,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: const TextStyle(fontWeight: FontWeight.w800)),
+          const SizedBox(height: 6),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: Container(
+              height: 110,
+              color: Colors.grey.shade200,
+              child: hasUrl
+                  ? Image.network(
+                      imageUrl!,
+                      fit: BoxFit.cover,
+                      width: double.infinity,
+                      errorBuilder: (_, __, ___) => const Center(child: Text('Image unavailable')),
+                    )
+                  : const Center(child: Text('No photo found')),
+            ),
+          ),
         ],
       ),
     );

@@ -147,6 +147,56 @@ class _BrowseCarsPageState extends State<BrowseCarsPage> {
     return '${_start!.day}/${_start!.month}/${_start!.year} - ${_end!.day}/${_end!.month}/${_end!.year}';
   }
 
+  String _hourLabel(int hour) {
+    final displayHour = hour % 12 == 0 ? 12 : hour % 12;
+    final suffix = hour >= 12 ? 'PM' : 'AM';
+    return '$displayHour:00 $suffix';
+  }
+
+  Future<TimeOfDay?> _pickHourOnly({
+    required String title,
+    required TimeOfDay initialTime,
+  }) async {
+    final pickedHour = await showModalBottomSheet<int>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) {
+        return SafeArea(
+          child: SizedBox(
+            height: 420,
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                  child: Text(
+                    title,
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+                  ),
+                ),
+                const Divider(height: 1),
+                Expanded(
+                  child: ListView.builder(
+                    itemCount: 24,
+                    itemBuilder: (context, index) {
+                      final selected = index == initialTime.hour;
+                      return ListTile(
+                        title: Text(_hourLabel(index)),
+                        trailing: selected ? const Icon(Icons.check_rounded) : null,
+                        onTap: () => Navigator.of(ctx).pop(index),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    if (pickedHour == null) return null;
+    return TimeOfDay(hour: pickedHour, minute: 0);
+  }
+
   Future<void> _pickDateRange() async {
     final now = DateTime.now();
     final initialStart = _start ?? now;
@@ -159,18 +209,17 @@ class _BrowseCarsPageState extends State<BrowseCarsPage> {
     );
     if (picked == null) return;
 
-    // Optional: also pick times to match the "10pm - 10pm" example.
-    final st = await showTimePicker(
-      context: context,
+    final st = await _pickHourOnly(
+      title: 'Select start hour',
       initialTime: _startTime,
     );
-    if (st != null) _startTime = st;
+    if (st != null) _startTime = TimeOfDay(hour: st.hour, minute: 0);
 
-    final et = await showTimePicker(
-      context: context,
+    final et = await _pickHourOnly(
+      title: 'Select end hour',
       initialTime: _endTime,
     );
-    if (et != null) _endTime = et;
+    if (et != null) _endTime = TimeOfDay(hour: et.hour, minute: 0);
 
     setState(() {
       _start = picked.start;

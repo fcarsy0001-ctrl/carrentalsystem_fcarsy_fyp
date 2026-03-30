@@ -1,10 +1,13 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../services/booking_hold_service.dart';
 import '../services/email_verification_service.dart';
+import 'my_orders_page.dart';
 import 'payment_page.dart';
 
 /// Contract signing page.
@@ -88,9 +91,20 @@ class _ContractPageState extends State<ContractPage> {
   String? _signedMethod; // 'OTP' / 'ESIGN'
 
   final _otp = TextEditingController();
+  Timer? _holdTicker;
+  DateTime? _holdExpiry;
+  bool _holdExpired = false;
+  bool _finishingExpiredHold = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadHoldTimer();
+  }
 
   @override
   void dispose() {
+    _holdTicker?.cancel();
     _otp.dispose();
     super.dispose();
   }
@@ -108,6 +122,77 @@ class _ContractPageState extends State<ContractPage> {
 
   String get _timeText =>
       '${_fmtDate(widget.start)} - ${_fmtDate(widget.end)}  ${_fmtTime(widget.start)} - ${_fmtTime(widget.end)}';
+
+  BookingHoldService get _holdSvc => BookingHoldService(_supa);
+
+  bool get _holdStillActive => !_holdExpired && _holdExpiry != null && _holdExpiry!.isAfter(DateTime.now());
+
+  Duration get _holdRemaining {
+    final expiry = _holdExpiry;
+    if (expiry == null) return Duration.zero;
+    final diff = expiry.difference(DateTime.now());
+    return diff.isNegative ? Duration.zero : diff;
+  }
+
+  String get _holdText => _holdExpiry == null ? '-' : _holdSvc.formatRemaining(_holdRemaining);
+
+  Future<void> _loadHoldTimer() async {
+    final row = await _holdSvc.fetchBookingMeta(widget.bookingId);
+    if (!mounted || row == null) return;
+    final expiry = _holdSvc.parseHoldExpiryFromRow(row);
+    final active = _holdSvc.isActiveHoldRow(row);
+    setState(() {
+      _holdExpiry = expiry;
+      _holdExpired = !active && _holdSvc.normalizeStatus(row['booking_status']) == 'holding';
+    });
+    if (active) {
+      _startHoldTicker();
+    } else if (_holdExpired) {
+      await _expireHoldAndExit(showSnack: false);
+    }
+  }
+
+  void _startHoldTicker() {
+    _holdTicker?.cancel();
+    if (_holdExpiry == null) return;
+    _holdTicker = Timer.periodic(const Duration(seconds: 1), (_) async {
+      if (!mounted) return;
+      setState(() {});
+      if (!_holdStillActive) {
+        await _expireHoldAndExit(showSnack: true);
+      }
+    });
+  }
+
+  bool _ensureHoldActive() {
+    if (_holdExpiry == null || _holdStillActive) return true;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Hold time already ended. Please make a new booking.')),
+    );
+    return false;
+  }
+
+  Future<void> _expireHoldAndExit({required bool showSnack}) async {
+    if (_finishingExpiredHold) return;
+    _finishingExpiredHold = true;
+    try {
+      await _holdSvc.expireIfNeeded(bookingId: widget.bookingId, holdExpiry: _holdExpiry);
+      _holdTicker?.cancel();
+      if (!mounted) return;
+      setState(() => _holdExpired = true);
+      if (showSnack) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('15-minute hold ended. This booking was cancelled automatically.')),
+        );
+      }
+      await Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const MyOrdersPage()),
+        (route) => false,
+      );
+    } finally {
+      _finishingExpiredHold = false;
+    }
+  }
 
   String _contractBody() {
     // Short but proper agreement text (mobile-friendly).
@@ -170,6 +255,7 @@ class _ContractPageState extends State<ContractPage> {
   }
 
   Future<void> _sendOtp() async {
+    if (!_ensureHoldActive()) return;
     if (widget.userEmail.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Email not found.')));
       return;
@@ -200,6 +286,7 @@ class _ContractPageState extends State<ContractPage> {
   }
 
   Future<void> _verifyOtp() async {
+    if (!_ensureHoldActive()) return;
     final code = _otp.text.trim();
     if (code.length != 6) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Enter 6-digit OTP.')));
@@ -225,6 +312,7 @@ class _ContractPageState extends State<ContractPage> {
   }
 
   Future<void> _openESign() async {
+    if (!_ensureHoldActive()) return;
     final pngB64 = await showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
@@ -246,6 +334,7 @@ class _ContractPageState extends State<ContractPage> {
   }
 
   Future<void> _process() async {
+    if (!_ensureHoldActive()) return;
     // IMPORTANT:
     // Some databases use triggers to write into rental_history on booking updates,
     // and RLS may block it (error 42501). To keep the flow working, we do NOT
@@ -316,6 +405,27 @@ class _ContractPageState extends State<ContractPage> {
             child: ListView(
               padding: const EdgeInsets.only(bottom: 16),
               children: [
+                if (_holdExpiry != null)
+                  _card(
+                    title: 'Hold Timer',
+                    child: Row(
+                      children: [
+                        const Icon(Icons.hourglass_top_rounded, color: Colors.orange),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            _holdStillActive
+                                ? 'Complete signing and payment within $_holdText.'
+                                : 'Hold expired. This booking can no longer continue.',
+                            style: TextStyle(
+                              color: _holdStillActive ? Colors.orange.shade800 : Colors.red.shade700,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 _card(
                   title: 'Contract',
                   child: Container(

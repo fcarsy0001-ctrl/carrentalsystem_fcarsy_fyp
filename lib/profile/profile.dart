@@ -163,7 +163,9 @@ class _ProfilePageState extends State<ProfilePage> {
                   await Navigator.of(context).push(
                     MaterialPageRoute(builder: (_) => const ProfileInfoPage()),
                   );
-                  setState(() => _profileFuture = _loadProfile());
+                  setState(() {
+                    _profileFuture = _loadProfile();
+                  });
                 },
               ),
               const SizedBox(height: 10),

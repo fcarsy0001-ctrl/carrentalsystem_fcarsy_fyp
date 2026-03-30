@@ -8,6 +8,7 @@ import '../services/promotion_service.dart';
 import 'product_page.dart';
 import 'vehicle_browse_page.dart';
 import 'nearby_map_page.dart';
+import 'my_orders_page.dart';
 
 /// Home screen (car rental) inspired by common car-sharing layouts
 /// (search + featured + car cards). Data is mocked for now.
@@ -29,6 +30,7 @@ class _HomePageState extends State<HomePage> {
   late Future<Set<String>> _claimedPromoIdsFuture;
 
   bool _hideAnnouncement = false;
+  bool _claimingAnnouncementPromo = false;
 
   @override
   void initState() {
@@ -40,12 +42,16 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _refreshAnnouncements() async {
-    setState(() => _annFuture = PromotionService(_supa).fetchActiveAnnouncements());
+    setState(() {
+      _annFuture = PromotionService(_supa).fetchActiveAnnouncements();
+    });
     await _annFuture;
   }
 
   Future<void> _refreshClaimedPromos() async {
-    setState(() => _claimedPromoIdsFuture = PromotionService(_supa).fetchClaimedPromoIds());
+    setState(() {
+      _claimedPromoIdsFuture = PromotionService(_supa).fetchClaimedPromoIds();
+    });
     await _claimedPromoIdsFuture;
   }
 
@@ -65,7 +71,9 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _refreshVehicles() async {
-    setState(() => _vehiclesFuture = _loadVehicles());
+    setState(() {
+      _vehiclesFuture = _loadVehicles();
+    });
     await _vehiclesFuture;
   }
 
@@ -290,10 +298,17 @@ class _HomePageState extends State<HomePage> {
                             promoCode: promo,
                             onDismiss: () => setState(() => _hideAnnouncement = true),
                             showClaimButton: true,
-                            claimLabel: alreadyClaimed ? 'Already claimed' : 'Claim',
-                            onClaim: alreadyClaimed || promoId.isEmpty
+                            claimLabel: _claimingAnnouncementPromo
+                                ? 'Claiming...'
+                                : alreadyClaimed
+                                    ? 'Claimed'
+                                    : 'Claim',
+                            onClaim: alreadyClaimed || promoId.isEmpty || _claimingAnnouncementPromo
                                 ? null
                                 : () async {
+                                    setState(() {
+                                      _claimingAnnouncementPromo = true;
+                                    });
                                     try {
                                       final svc = PromotionService(_supa);
                                       final result = await svc.claimVoucherWithStatus(promoId: promoId);
@@ -312,6 +327,11 @@ class _HomePageState extends State<HomePage> {
                                       if (!mounted) return;
                                       ScaffoldMessenger.of(context)
                                           .showSnackBar(SnackBar(content: Text('Claim failed: $e')));
+                                    } finally {
+                                      if (!mounted) return;
+                                      setState(() {
+                                        _claimingAnnouncementPromo = false;
+                                      });
                                     }
                                   },
                           );
@@ -365,9 +385,9 @@ class _HomePageState extends State<HomePage> {
                     icon: Icons.receipt_long_outlined,
                     title: 'Bookings',
                     subtitle: 'Your rentals',
-                    onTap: () {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Bookings (coming soon)')),
+                    onTap: () async {
+                      await Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const MyOrdersPage()),
                       );
                     },
                   ),

@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -188,10 +187,20 @@ class _NearbyMapPageState extends State<NearbyMapPage> {
 
     if (!mounted) return;
 
-    if (firstFound != null) {
+    final points = _geoCache.values.whereType<LatLng>().toList();
+    if (points.isNotEmpty) {
+      final avgLat = points.map((e) => e.latitude).reduce((a, b) => a + b) / points.length;
+      final avgLng = points.map((e) => e.longitude).reduce((a, b) => a + b) / points.length;
+      setState(() {
+        _center = LatLng(avgLat, avgLng);
+        _zoom = points.length <= 1 ? 14.0 : 9.5;
+      });
+      _mapController.move(_center, _zoom);
+    } else if (firstFound != null) {
       setState(() {
         _center = firstFound!;
       });
+      _mapController.move(_center, _zoom);
     }
 
     setState(() => _geocoding = false);
@@ -239,6 +248,64 @@ class _NearbyMapPageState extends State<NearbyMapPage> {
     } catch (_) {
       return null;
     }
+  }
+
+
+  List<Marker> _locationMarkers(Color color, Color foreground) {
+    final out = <Marker>[];
+    for (final entry in _vehiclesByLocation.entries) {
+      final base = _geoCache[entry.key];
+      if (base == null) continue;
+
+      final cars = entry.value;
+      final count = cars.length;
+      final markerWidth = count >= 10 ? 86.0 : 76.0;
+
+      out.add(
+        Marker(
+          point: base,
+          width: markerWidth,
+          height: 64,
+          child: GestureDetector(
+            onTap: () => _openLocationSheet(entry.key),
+            child: Container(
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.95),
+                borderRadius: BorderRadius.circular(18),
+                boxShadow: [
+                  BoxShadow(
+                    blurRadius: 12,
+                    offset: const Offset(0, 4),
+                    color: Colors.black.withOpacity(0.18),
+                  ),
+                ],
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.directions_car_rounded, color: foreground, size: 20),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      count == 1 ? '1 car' : '$count cars',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: foreground,
+                        fontWeight: FontWeight.w900,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    return out;
   }
 
   void _openLocationSheet(String location) {
@@ -383,41 +450,8 @@ class _NearbyMapPageState extends State<NearbyMapPage> {
                                     ),
                                   ),
 
-                                // vehicle location markers
-                                ..._vehiclesByLocation.entries
-                                    .map((e) => MapEntry(e.key, _geoCache[e.key]))
-                                    .where((e) => e.value != null)
-                                    .map(
-                                      (e) => Marker(
-                                        point: e.value!,
-                                        width: 46,
-                                        height: 46,
-                                        child: GestureDetector(
-                                          onTap: () => _openLocationSheet(e.key),
-                                          child: Container(
-                                            decoration: BoxDecoration(
-                                              color: cs.primary.withOpacity(0.92),
-                                              shape: BoxShape.circle,
-                                              boxShadow: [
-                                                BoxShadow(
-                                                  blurRadius: 10,
-                                                  offset: const Offset(0, 4),
-                                                  color: Colors.black.withOpacity(0.18),
-                                                ),
-                                              ],
-                                            ),
-                                            alignment: Alignment.center,
-                                            child: Text(
-                                              '${_vehiclesByLocation[e.key]?.length ?? 0}',
-                                              style: TextStyle(
-                                                color: cs.onPrimary,
-                                                fontWeight: FontWeight.w900,
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
+                                // one pin for each parking location, with total cars shown on the pin
+                                ..._locationMarkers(cs.primary, cs.onPrimary),
                               ],
                             ),
                           ],
@@ -433,7 +467,7 @@ class _NearbyMapPageState extends State<NearbyMapPage> {
                         child: Text(
                           _geocoding
                               ? 'Loading map pins… (converting location to coordinates)'
-                              : 'Tap a pin to see cars at that location.',
+                              : 'Each pin shows the total cars at that parking location. Tap a pin to see the full car list.',
                           style: TextStyle(color: Colors.grey.shade700),
                         ),
                       ),

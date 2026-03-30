@@ -1,8 +1,9 @@
-﻿import 'dart:math' as math;
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../services/booking_availability_service.dart';
 import '../services/driver_license_service.dart';
 import 'booking_page.dart';
 
@@ -138,12 +139,22 @@ class _ProductPageState extends State<ProductPage> {
 
   DateTime? _start;
   DateTime? _end;
+  bool _checkingAvailability = false;
+  bool? _slotAvailable;
+  String? _availabilityMessage;
 
   @override
   void initState() {
     super.initState();
     _start = widget.initialStartDateTime;
     _end = widget.initialEndDateTime;
+    if (_hasTime) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _checkAvailability(showMessage: false);
+        }
+      });
+    }
   }
 
   // Pricing
@@ -199,6 +210,110 @@ class _ProductPageState extends State<ProductPage> {
     return '${_fmtDate(_start!)} - ${_fmtDate(_end!)}  ${_fmtTime(_start!)} - ${_fmtTime(_end!)}';
   }
 
+  String _hourLabel(int hour) {
+    final displayHour = hour % 12 == 0 ? 12 : hour % 12;
+    final suffix = hour >= 12 ? 'PM' : 'AM';
+    return '$displayHour:00 $suffix';
+  }
+
+  Future<TimeOfDay?> _pickHourOnly({
+    required String title,
+    required TimeOfDay initialTime,
+  }) async {
+    final pickedHour = await showModalBottomSheet<int>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) {
+        return SafeArea(
+          child: SizedBox(
+            height: 420,
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                  child: Text(
+                    title,
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+                  ),
+                ),
+                const Divider(height: 1),
+                Expanded(
+                  child: ListView.builder(
+                    itemCount: 24,
+                    itemBuilder: (context, index) {
+                      final selected = index == initialTime.hour;
+                      return ListTile(
+                        title: Text(_hourLabel(index)),
+                        trailing: selected ? const Icon(Icons.check_rounded) : null,
+                        onTap: () => Navigator.of(ctx).pop(index),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    if (pickedHour == null) return null;
+    return TimeOfDay(hour: pickedHour, minute: 0);
+  }
+
+  Future<void> _checkAvailability({bool showMessage = true}) async {
+    if (!_hasTime) {
+      if (mounted) {
+        setState(() {
+          _slotAvailable = null;
+          _availabilityMessage = null;
+        });
+      }
+      return;
+    }
+
+    setState(() {
+      _checkingAvailability = true;
+      _slotAvailable = null;
+      _availabilityMessage = null;
+    });
+
+    try {
+      final svc = BookingAvailabilityService(_supa);
+      final available = await svc.isVehicleAvailable(
+        vehicleId: widget.vehicleId,
+        start: _start!,
+        end: _end!,
+      );
+      if (!mounted) return;
+      setState(() {
+        _slotAvailable = available;
+        _availabilityMessage = available
+            ? 'Selected time is available.'
+            : 'This car is already booked during the selected date and time.';
+      });
+      if (showMessage) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(_availabilityMessage!)),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _slotAvailable = null;
+        _availabilityMessage = 'Availability check failed. Please try again.';
+      });
+      if (showMessage) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Availability check failed: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _checkingAvailability = false);
+      }
+    }
+  }
+
   String _typeHint(String type) {
     switch (type.trim().toLowerCase()) {
       case 'sedan':
@@ -247,18 +362,18 @@ class _ProductPageState extends State<ProductPage> {
     );
     if (range == null) return;
 
-    final startTime = await showTimePicker(
-      context: context,
+    final startTime = await _pickHourOnly(
+      title: 'Select start hour',
       initialTime: _start != null
-          ? TimeOfDay(hour: _start!.hour, minute: _start!.minute)
+          ? TimeOfDay(hour: _start!.hour, minute: 0)
           : const TimeOfDay(hour: 10, minute: 0),
     );
     if (startTime == null) return;
 
-    final endTime = await showTimePicker(
-      context: context,
+    final endTime = await _pickHourOnly(
+      title: 'Select end hour',
       initialTime: _end != null
-          ? TimeOfDay(hour: _end!.hour, minute: _end!.minute)
+          ? TimeOfDay(hour: _end!.hour, minute: 0)
           : const TimeOfDay(hour: 10, minute: 0),
     );
     if (endTime == null) return;
@@ -268,14 +383,14 @@ class _ProductPageState extends State<ProductPage> {
       range.start.month,
       range.start.day,
       startTime.hour,
-      startTime.minute,
+      0,
     );
     var end = DateTime(
       range.end.year,
       range.end.month,
       range.end.day,
       endTime.hour,
-      endTime.minute,
+      0,
     );
     if (!end.isAfter(start)) {
       end = end.add(const Duration(days: 1));
@@ -284,6 +399,7 @@ class _ProductPageState extends State<ProductPage> {
       _start = start;
       _end = end;
     });
+    await _checkAvailability();
   }
 
   Future<bool> _ensureLicenseApproved() async {
@@ -312,6 +428,19 @@ class _ProductPageState extends State<ProductPage> {
   Future<void> _goBooking() async {
     if (!_hasTime) {
       await _pickDateTimeRange();
+      return;
+    }
+    await _checkAvailability(showMessage: false);
+    if (!mounted) return;
+    if (_slotAvailable != true) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            _availabilityMessage ??
+                'This car is not available for the selected date and time. Please choose another slot.',
+          ),
+        ),
+      );
       return;
     }
     final ok = await _ensureLicenseApproved();
@@ -472,8 +601,14 @@ class _ProductPageState extends State<ProductPage> {
                         width: double.infinity,
                         height: 44,
                         child: FilledButton(
-                          onPressed: _goBooking,
-                          child: const Text('Book Now'),
+                          onPressed: _checkingAvailability ? null : _goBooking,
+                          child: Text(
+                            _checkingAvailability
+                                ? 'Checking...'
+                                : _slotAvailable == false
+                                    ? 'Select Another Time'
+                                    : 'Book Now',
+                          ),
                         ),
                       ),
                     ],
@@ -553,6 +688,35 @@ class _ProductPageState extends State<ProductPage> {
                 ),
               ),
             ),
+            if (_checkingAvailability)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: Row(
+                  children: [
+                    const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Checking car availability...',
+                      style: TextStyle(color: Colors.grey.shade700),
+                    ),
+                  ],
+                ),
+              )
+            else if ((_availabilityMessage ?? '').trim().isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: Text(
+                  _availabilityMessage!,
+                  style: TextStyle(
+                    color: _slotAvailable == false ? Colors.red.shade700 : Colors.green.shade700,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
 
             const SizedBox(height: 12),
             const Padding(

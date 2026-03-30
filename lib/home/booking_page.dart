@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'contract_page.dart';
+import '../services/booking_availability_service.dart';
 import '../services/promotion_service.dart';
 
 class BookingPage extends StatefulWidget {
@@ -59,11 +60,13 @@ class _BookingPageState extends State<BookingPage> {
   final Map<String, bool> _selected = {};
 
   final _voucherCtrl = TextEditingController();
+  bool _submitting = false;
   String? _voucherCode;
   String? _voucherPromoId;
   double _voucherDiscount = 0.0;
   String? _voucherMsg;
   bool _applyingVoucher = false;
+  bool _loadingBestVoucher = false;
 
   final List<_InsuranceOption> _options = const [
     _InsuranceOption('Basic coverage', 0),
@@ -79,6 +82,7 @@ class _BookingPageState extends State<BookingPage> {
     for (final o in _options) {
       _selected[o.name] = false;
     }
+    _autoApplyBestVoucher();
   }
 
   @override
@@ -100,6 +104,76 @@ class _BookingPageState extends State<BookingPage> {
     final d = _voucherDiscount;
     if (d <= 0) return rentalRaw;
     return (rentalRaw - d).clamp(0, rentalRaw).toDouble();
+  }
+
+  bool _isPromoActive(Map<String, dynamic> promo) {
+    final active = promo['active'];
+    final isActive = active == null || active == true || active.toString().toLowerCase() == 'true';
+    if (!isActive) return false;
+
+    final now = DateTime.now();
+    final start = DateTime.tryParse(_s(promo['start_at']));
+    final end = DateTime.tryParse(_s(promo['end_at']));
+    if (start != null && now.isBefore(start)) return false;
+    if (end != null && now.isAfter(end)) return false;
+    return true;
+  }
+
+  String _s(dynamic value) => value == null ? '' : value.toString().trim();
+
+  Future<void> _autoApplyBestVoucher() async {
+    if (_loadingBestVoucher || _voucherCode != null || _voucherCtrl.text.trim().isNotEmpty) {
+      return;
+    }
+
+    setState(() => _loadingBestVoucher = true);
+    try {
+      final myVouchers = await _promo.fetchMyVouchers();
+      if (myVouchers.isEmpty) return;
+
+      final rentalRaw = _rentalSubtotal();
+      Map<String, dynamic>? bestPromo;
+      String? bestPromoId;
+      double bestDiscount = 0;
+
+      for (final row in myVouchers) {
+        final usedBookingId = _s(row['used_booking_id']);
+        final usedAt = _s(row['used_at']);
+        if (usedBookingId.isNotEmpty || usedAt.isNotEmpty) continue;
+
+        final promoRaw = row['promotion'];
+        if (promoRaw is! Map) continue;
+        final promo = Map<String, dynamic>.from(promoRaw as Map);
+        if (!_isPromoActive(promo)) continue;
+
+        final discount = _promo.computeDiscount(promo: promo, rentalSubtotal: rentalRaw);
+        if (discount <= 0) continue;
+        if (discount > bestDiscount) {
+          bestDiscount = discount;
+          bestPromo = promo;
+          bestPromoId = _s(row['promo_id']).isEmpty ? _s(promo['promo_id']) : _s(row['promo_id']);
+        }
+      }
+
+      if (!mounted || bestPromo == null || bestDiscount <= 0) return;
+
+      final code = _s(bestPromo['code']);
+      setState(() {
+        _voucherCtrl.text = code;
+        _voucherCode = code.isEmpty ? null : code;
+        _voucherPromoId = bestPromoId;
+        _voucherDiscount = bestDiscount;
+        _voucherMsg = code.isEmpty
+            ? 'Best voucher auto applied: -RM${bestDiscount.toStringAsFixed(2)}'
+            : 'Best voucher auto applied: $code (-RM${bestDiscount.toStringAsFixed(2)})';
+      });
+    } catch (_) {
+      // Keep checkout smooth even if voucher auto-fill fails.
+    } finally {
+      if (mounted) {
+        setState(() => _loadingBestVoucher = false);
+      }
+    }
   }
 
   Future<void> _applyVoucher(double rentalRaw) async {
@@ -247,9 +321,21 @@ class _BookingPageState extends State<BookingPage> {
     required double sst,
     required double subTotal,
   }) async {
+    if (_submitting) return;
+    if (!widget.end.isAfter(widget.start)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('End time must be after start time.')),
+      );
+      return;
+    }
+
+    setState(() => _submitting = true);
+
     final u = _supa.auth.currentUser;
     if (u == null) {
       if (!mounted) return;
+      setState(() => _submitting = false);
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please login first.')));
       return;
     }
@@ -261,6 +347,7 @@ class _BookingPageState extends State<BookingPage> {
     if (userId.isEmpty) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('User profile not found.')));
+      setState(() => _submitting = false);
       return;
     }
 
@@ -268,6 +355,34 @@ class _BookingPageState extends State<BookingPage> {
     // Many schemas use varchar(10) for IDs, so keep IDs <= 10 chars.
     // Format: BK + 8 digits (last 8 digits of epoch ms) => 10 chars.
     final bookingId = 'BK${(now.millisecondsSinceEpoch % 100000000).toString().padLeft(8, '0')}';
+
+    final availabilitySvc = BookingAvailabilityService(_supa);
+    try {
+      final conflicts = await availabilitySvc.fetchConflictingBookings(
+        vehicleId: widget.vehicleId,
+        start: widget.start,
+        end: widget.end,
+      );
+      if (conflicts.isNotEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'This car is already booked for the selected date and time. Please choose another slot.',
+            ),
+          ),
+        );
+        setState(() => _submitting = false);
+        return;
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Availability check failed: $e')),
+      );
+      setState(() => _submitting = false);
+      return;
+    }
 
     // Create booking (minimal fields to satisfy NOT NULL constraints)
     try {
@@ -278,6 +393,7 @@ class _BookingPageState extends State<BookingPage> {
         'booking_date': _dateOnly(now),
         'rental_start': widget.start.toIso8601String(),
         'rental_end': widget.end.toIso8601String(),
+        'hold_expires_at': now.add(const Duration(minutes: 15)).toIso8601String(),
         // Keep status short (some schemas use varchar(10)).
         'booking_status': 'Holding',
         'payment_option': 'Online',
@@ -301,6 +417,7 @@ class _BookingPageState extends State<BookingPage> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Create booking failed: $e')));
+      setState(() => _submitting = false);
       return;
     }
 
@@ -325,6 +442,7 @@ class _BookingPageState extends State<BookingPage> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Create contract failed: $e')));
+      setState(() => _submitting = false);
       return;
     }
 
@@ -360,6 +478,10 @@ class _BookingPageState extends State<BookingPage> {
         ),
       ),
     );
+
+    if (mounted) {
+      setState(() => _submitting = false);
+    }
   }
 
   Widget _sectionCard({required String title, required Widget child}) {
@@ -520,7 +642,7 @@ class _BookingPageState extends State<BookingPage> {
             ),
 
             _sectionCard(
-              title: 'Voucher',
+              title: 'Voucher (auto fill if available)',
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -613,7 +735,9 @@ class _BookingPageState extends State<BookingPage> {
                     width: double.infinity,
                     height: 46,
                     child: FilledButton(
-                          onPressed: () => _proceed(
+                          onPressed: _submitting
+                              ? null
+                              : () => _proceed(
                             rentalSubtotal: rental,
                             voucherDiscount: _voucherDiscount,
                             voucherCode: _voucherCode,
@@ -623,7 +747,7 @@ class _BookingPageState extends State<BookingPage> {
                             sst: sst,
                             subTotal: subTotal,
                           ),
-                      child: const Text('Proceed'),
+                      child: Text(_submitting ? 'Checking...' : 'Proceed'),
                     ),
                   ),
                   const SizedBox(height: 10),

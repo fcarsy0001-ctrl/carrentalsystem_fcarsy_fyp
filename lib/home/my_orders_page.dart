@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../config/supabase_config.dart';
+import '../services/booking_hold_service.dart';
 import 'my_order_detail_page.dart';
 
 /// My Orders (P1)
@@ -25,12 +27,27 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
   List<Map<String, dynamic>> _incoming = const [];
   List<Map<String, dynamic>> _past = const [];
   List<Map<String, dynamic>> _blocked = const [];
+  List<Map<String, dynamic>> _holding = const [];
   bool _shownDeactiveAlert = false;
+  Timer? _ticker;
+  Timer? _reloadDebounce;
+  DateTime _liveNow = DateTime.now();
+  bool _expiringVisibleHoldings = false;
+  StreamSubscription<List<Map<String, dynamic>>>? _bookingSubscription;
+  String? _bookingSubscriptionUserId;
 
   @override
   void initState() {
     super.initState();
     _load();
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    _reloadDebounce?.cancel();
+    _bookingSubscription?.cancel();
+    super.dispose();
   }
 
   Future<String?> _currentUserId() async {
@@ -47,9 +64,10 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
 
   DateTime? _dt(dynamic v) {
     if (v == null) return null;
-    if (v is DateTime) return v;
+    if (v is DateTime) return v.isUtc ? v.toLocal() : v;
     try {
-      return DateTime.parse(v.toString());
+      final parsed = DateTime.parse(v.toString());
+      return parsed.isUtc ? parsed.toLocal() : parsed;
     } catch (_) {
       return null;
     }
@@ -60,12 +78,66 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
     return s == 'deactive' || s == 'cancelled';
   }
 
+  BookingHoldService get _holdSvc => BookingHoldService(_supa);
+
+  bool _isActiveHolding(Map<String, dynamic> r, [DateTime? now]) =>
+      _holdSvc.isActiveHoldRow(r, now: now ?? _liveNow);
+
+  bool _isExpiredHolding(Map<String, dynamic> r, [DateTime? now]) {
+    final s = _normStatus((r['booking_status'] ?? '').toString());
+    if (s != 'holding') return false;
+    final expiry = _holdSvc.parseHoldExpiryFromRow(r);
+    if (expiry == null) return true;
+    return !expiry.isAfter(now ?? _liveNow);
+  }
+
+  void _restartTickerIfNeeded() {
+    _ticker?.cancel();
+    if (_holding.isEmpty) return;
+    _ticker = Timer.periodic(const Duration(seconds: 1), (_) async {
+      if (!mounted) return;
+      setState(() => _liveNow = DateTime.now());
+      if (_holding.any((r) => _isExpiredHolding(r, _liveNow))) {
+        await _expireVisibleHoldingsIfNeeded();
+      }
+    });
+  }
+
+  Future<void> _expireVisibleHoldingsIfNeeded() async {
+    if (_expiringVisibleHoldings) return;
+    _expiringVisibleHoldings = true;
+    try {
+      bool changed = false;
+      final now = _liveNow;
+      for (final row in List<Map<String, dynamic>>.from(_holding)) {
+        if (!_isExpiredHolding(row, now)) continue;
+        final bookingId = (row['booking_id'] ?? '').toString();
+        if (bookingId.isEmpty) continue;
+        await _holdSvc.expireIfNeeded(bookingId: bookingId, row: row);
+        changed = true;
+      }
+      if (changed && mounted) {
+        await _load();
+      }
+    } finally {
+      _expiringVisibleHoldings = false;
+    }
+  }
+
+  bool _hasPickupCompleted(Map<String, dynamic> r) => _dt(r['pickup_completed_at']) != null;
+
+  bool _hasDropoffCompleted(Map<String, dynamic> r) {
+    final s = _normStatus((r['booking_status'] ?? '').toString());
+    if (s == 'inactive') return true;
+    return _dt(r['dropoff_completed_at']) != null || _dt(r['actual_dropoff_at']) != null;
+  }
+
   bool _isIncoming(Map<String, dynamic> r) {
     final start = _dt(r['rental_start']);
     final end = _dt(r['rental_end']);
     if (start == null || end == null) return false;
-    if (_isBlocked(r)) return false;
-    final now = DateTime.now();
+    if (_isBlocked(r) || _isActiveHolding(r) || _hasDropoffCompleted(r)) return false;
+    final now = _liveNow;
     return now.isBefore(start);
   }
 
@@ -73,8 +145,11 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
     final start = _dt(r['rental_start']);
     final end = _dt(r['rental_end']);
     if (start == null || end == null) return false;
-    if (_isBlocked(r)) return false;
+    if (_isBlocked(r) || _isActiveHolding(r) || _hasDropoffCompleted(r)) return false;
     final now = DateTime.now();
+    if (_hasPickupCompleted(r)) {
+      return true;
+    }
     return (now.isAtSameMomentAs(start) || now.isAfter(start)) && now.isBefore(end);
   }
 
@@ -83,7 +158,12 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
     final end = _dt(r['rental_end']);
     if (start == null || end == null) return '-';
 
-    final now = DateTime.now();
+    final now = _liveNow;
+
+    if (_isActiveHolding(r, now)) {
+      final remaining = _holdSvc.remainingForRow(r, now: now) ?? Duration.zero;
+      return 'Hold expires in ${_holdSvc.formatRemaining(remaining)}';
+    }
 
     if (_isIncoming(r)) {
       final diff = start.difference(now);
@@ -95,6 +175,10 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
       return 'Starts in ${math.max(0, hours)} hour';
     }
 
+    if (_hasPickupCompleted(r) && !_hasDropoffCompleted(r) && now.isAfter(end)) {
+      return 'Overtime';
+    }
+
     final diff = end.difference(now);
     if (diff.isNegative) return 'Completed';
 
@@ -103,6 +187,19 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
     final hours = (totalMins % (60 * 24)) ~/ 60;
     if (days > 0) return '$days day ${hours}h left';
     return '${math.max(0, hours)} hour left';
+  }
+
+  String _blockedInfoText(Map<String, dynamic> r) {
+    final status = _normStatus((r['booking_status'] ?? '').toString());
+    if (status == 'deactive') return 'Please contact admin';
+
+    final cancelledAt = _dt(r['cancelled_by_user_at']);
+    if (cancelledAt != null) return 'Cancelled by user';
+
+    final holdExpiry = _holdSvc.parseHoldExpiryFromRow(r);
+    if (holdExpiry != null) return 'Order hold expired';
+
+    return 'Order cancelled';
   }
 
   String _normStatus(String status) {
@@ -118,6 +215,7 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
     final s = _normStatus(status);
     if (s == 'cancelled') return 'Cancelled';
     if (s == 'deactive') return 'Deactive';
+    if (s == 'holding') return 'Holding';
     if (s == 'active') return 'Active';
     if (s == 'inactive') return 'Inactive';
     return status.trim().isEmpty ? '-' : status;
@@ -126,6 +224,7 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
   Color _statusColor(String status) {
     final s = _normStatus(status);
     if (s == 'cancelled' || s == 'deactive') return Colors.red;
+    if (s == 'holding') return Colors.orange;
     if (s == 'active') return Colors.green;
     if (s == 'inactive') return Colors.grey;
     return Colors.blueGrey;
@@ -144,8 +243,7 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
       final base = _supa
           .from('booking')
           .select(
-            'booking_id, booking_status, rental_start, rental_end, total_rental_amount, vehicle_id,'
-            ' vehicle:vehicle_id (vehicle_id, vehicle_brand, vehicle_model, vehicle_plate_no, vehicle_type, transmission_type, fuel_type, seat_capacity, daily_rate, vehicle_location, vehicle_photo_path, vehicle_color, fuel_percent)',
+            '*, vehicle:vehicle_id (vehicle_id, vehicle_brand, vehicle_model, vehicle_plate_no, vehicle_type, transmission_type, fuel_type, seat_capacity, daily_rate, vehicle_location, vehicle_photo_path, vehicle_color, fuel_percent)',
           )
           .eq('user_id', userId);
       final data = await base.order('rental_start', ascending: false);
@@ -156,7 +254,7 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
       // Fallback: fetch bookings, then vehicles, then merge.
       final base = _supa
           .from('booking')
-          .select('booking_id, booking_status, rental_start, rental_end, total_rental_amount, vehicle_id')
+          .select('*')
           .eq('user_id', userId);
       final data = await base.order('rental_start', ascending: false);
       final bookings = (data as List)
@@ -193,6 +291,26 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
     }
   }
 
+  void _ensureRealtimeBookingWatch(String userId) {
+    if (_bookingSubscriptionUserId == userId && _bookingSubscription != null) {
+      return;
+    }
+    _bookingSubscription?.cancel();
+    _bookingSubscriptionUserId = userId;
+    _bookingSubscription = _supa
+        .from('booking')
+        .stream(primaryKey: const ['booking_id'])
+        .eq('user_id', userId)
+        .listen((_) {
+      _reloadDebounce?.cancel();
+      _reloadDebounce = Timer(const Duration(milliseconds: 250), () {
+        if (mounted) {
+          _load();
+        }
+      });
+    });
+  }
+
   Future<void> _load() async {
     setState(() {
       _loading = true;
@@ -201,21 +319,34 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
       _incoming = const [];
       _past = const [];
       _blocked = const [];
+      _holding = const [];
     });
 
     try {
       final userId = await _currentUserId();
       if (userId == null || userId.isEmpty) throw 'Please login first.';
+      _ensureRealtimeBookingWatch(userId);
 
       final rows = await _fetchBookingsWithVehicle(userId);
       final ongoing = <Map<String, dynamic>>[];
       final incoming = <Map<String, dynamic>>[];
       final past = <Map<String, dynamic>>[];
       final blocked = <Map<String, dynamic>>[];
+      final holding = <Map<String, dynamic>>[];
+      final now = DateTime.now();
 
       for (final r in rows) {
-        if (_isBlocked(r)) {
+        if (_isExpiredHolding(r, now)) {
+          final bookingId = (r['booking_id'] ?? '').toString();
+          if (bookingId.isNotEmpty) {
+            await _holdSvc.expireIfNeeded(bookingId: bookingId, row: r);
+          }
+          r['booking_status'] = 'Cancelled';
           blocked.add(r);
+        } else if (_isBlocked(r)) {
+          blocked.add(r);
+        } else if (_isActiveHolding(r, now)) {
+          holding.add(r);
         } else if (_isIncoming(r)) {
           incoming.add(r);
         } else if (_isOngoing(r)) {
@@ -230,9 +361,12 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
         _ongoing = ongoing;
         _incoming = incoming;
         _blocked = blocked;
+        _holding = holding;
         _past = past;
+        _liveNow = DateTime.now();
         _loading = false;
       });
+      _restartTickerIfNeeded();
 
       // Show alert if any order is deactivated by admin.
       if (!_shownDeactiveAlert) {
@@ -304,6 +438,32 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
                     )
                   else ...[
                     const _SectionHeader(
+                      title: 'Holding Orders',
+                      color: Colors.orange,
+                    ),
+                    const SizedBox(height: 8),
+                    if (_holding.isEmpty)
+                      Text(
+                        'No holding orders.',
+                        style: TextStyle(color: Colors.grey.shade700),
+                      )
+                    else
+                      ..._holding.map(
+                        (r) => _OrderCard(
+                          row: r,
+                          statusText: 'Holding',
+                          statusColor: Colors.orange,
+                          durationText: _durationText(r),
+                          photoUrlBuilder: _vehiclePhotoPublicUrl,
+                          onTap: () => Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => MyOrderDetailsPage(booking: r),
+                            ),
+                          ),
+                        ),
+                      ),
+                    const SizedBox(height: 14),
+                    const _SectionHeader(
                       title: 'Ongoing Orders',
                       color: Colors.green,
                     ),
@@ -317,8 +477,8 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
                       ..._ongoing.map(
                         (r) => _OrderCard(
                           row: r,
-                          statusText: 'Ongoing',
-                          statusColor: Colors.green,
+                          statusText: _hasPickupCompleted(r) ? 'Ongoing' : 'Pickup Ready',
+                          statusColor: _hasPickupCompleted(r) ? Colors.green : Colors.teal,
                           durationText: _durationText(r),
                           photoUrlBuilder: _vehiclePhotoPublicUrl,
                           onTap: () => Navigator.of(context).push(
@@ -371,7 +531,8 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
                           row: r,
                           statusText: _statusText((r['booking_status'] ?? '').toString()),
                           statusColor: _statusColor((r['booking_status'] ?? '').toString()),
-                          durationText: 'Please contact admin',
+                          infoLabel: 'Reason',
+                          durationText: _blockedInfoText(r),
                           photoUrlBuilder: _vehiclePhotoPublicUrl,
                           onTap: () => Navigator.of(context).push(
                             MaterialPageRoute(
@@ -453,12 +614,14 @@ class _OrderCard extends StatelessWidget {
     required this.durationText,
     required this.photoUrlBuilder,
     required this.onTap,
+    this.infoLabel = 'Time duration',
   });
 
   final Map<String, dynamic> row;
   final String statusText;
   final Color statusColor;
   final String durationText;
+  final String infoLabel;
   final String Function(String? path) photoUrlBuilder;
   final VoidCallback onTap;
 
@@ -524,7 +687,7 @@ class _OrderCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      'Time duration: $durationText',
+                      '$infoLabel: $durationText',
                       style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
                     ),
                   ],

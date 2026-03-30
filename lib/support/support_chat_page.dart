@@ -24,11 +24,18 @@ class _SupportChatPageState extends State<SupportChatPage> {
   late final SupportTicketService _service;
   bool _sending = false;
   bool _busy = false;
+  bool _loadingSavedReview = false;
+  bool _submittingReview = false;
+  bool _dismissingReview = false;
+  bool _reviewDismissed = false;
+  int? _savedStars;
+  int _draftStars = 5;
 
   @override
   void initState() {
     super.initState();
     _service = SupportTicketService(Supabase.instance.client);
+    _loadReviewState();
   }
 
   @override
@@ -39,6 +46,17 @@ class _SupportChatPageState extends State<SupportChatPage> {
   }
 
   String _s(dynamic value) => value == null ? '' : value.toString().trim();
+
+  int? _parseStars(dynamic value) {
+    if (value == null) return null;
+    if (value is num) {
+      final n = value.toInt();
+      return (n >= 1 && n <= 5) ? n : null;
+    }
+    final n = int.tryParse(_s(value));
+    if (n == null || n < 1 || n > 5) return null;
+    return n;
+  }
 
   String _fmtDate(dynamic value) {
     final raw = _s(value);
@@ -56,6 +74,27 @@ class _SupportChatPageState extends State<SupportChatPage> {
       case 'open':
       default:
         return Colors.green;
+    }
+  }
+
+  Future<void> _loadReviewState() async {
+    if (widget.isAgentView || _loadingSavedReview) return;
+    setState(() => _loadingSavedReview = true);
+    try {
+      final stars = await _service.getTicketReview(widget.ticketId);
+      final dismissed = await _service.isTicketReviewDismissed(widget.ticketId);
+      if (!mounted) return;
+      setState(() {
+        _savedStars = stars;
+        _reviewDismissed = dismissed && stars == null;
+        if (stars != null) _draftStars = stars;
+      });
+    } catch (_) {
+      // Keep UI smooth even if optional review storage is not ready yet.
+    } finally {
+      if (mounted) {
+        setState(() => _loadingSavedReview = false);
+      }
     }
   }
 
@@ -90,14 +129,22 @@ class _SupportChatPageState extends State<SupportChatPage> {
 
   Future<void> _closeTicket() async {
     if (_busy) return;
+    final isUserView = !widget.isAgentView;
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Close ticket'),
-        content: const Text('Close this support ticket? The user will be able to create a new ticket after this.'),
+        title: Text(isUserView ? 'Close case' : 'Close ticket'),
+        content: Text(
+          isUserView
+              ? 'You sure want to close case?'
+              : 'Close this support ticket? The user will be able to create a new ticket after this.',
+        ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Close')),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(isUserView ? 'Close case' : 'Close'),
+          ),
         ],
       ),
     );
@@ -108,7 +155,7 @@ class _SupportChatPageState extends State<SupportChatPage> {
       await _service.closeTicket(widget.ticketId);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Ticket closed.')),
+        SnackBar(content: Text(isUserView ? 'Case closed.' : 'Ticket closed.')),
       );
     } catch (e) {
       if (!mounted) return;
@@ -178,6 +225,152 @@ class _SupportChatPageState extends State<SupportChatPage> {
     }
   }
 
+  Future<void> _submitReview() async {
+    if (_submittingReview || _savedStars != null) return;
+
+    setState(() => _submittingReview = true);
+    try {
+      await _service.submitTicketReview(ticketId: widget.ticketId, stars: _draftStars);
+      if (!mounted) return;
+      setState(() => _savedStars = _draftStars);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Thanks for rating the staff.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Review failed: $e'), backgroundColor: Colors.red),
+      );
+    } finally {
+      if (mounted) setState(() => _submittingReview = false);
+    }
+  }
+
+
+  Future<void> _dismissReviewPrompt() async {
+    if (_dismissingReview || _savedStars != null) return;
+    setState(() => _dismissingReview = true);
+    try {
+      await _service.dismissTicketReview(widget.ticketId);
+    } catch (_) {
+      // Keep dismiss action smooth even if storage fallback is unavailable.
+    } finally {
+      if (!mounted) return;
+      setState(() {
+        _reviewDismissed = true;
+        _dismissingReview = false;
+      });
+    }
+  }
+
+  Widget _buildStarRow({
+    required int stars,
+    required bool readOnly,
+    required ValueChanged<int>? onChanged,
+  }) {
+    return Wrap(
+      spacing: 4,
+      children: List.generate(5, (index) {
+        final value = index + 1;
+        final filled = value <= stars;
+        return IconButton(
+          onPressed: readOnly ? null : () => onChanged?.call(value),
+          icon: Icon(
+            filled ? Icons.star_rounded : Icons.star_border_rounded,
+            color: Colors.amber.shade700,
+            size: 30,
+          ),
+          tooltip: '$value star',
+          visualDensity: VisualDensity.compact,
+        );
+      }),
+    );
+  }
+
+  Widget _buildReviewCard({
+    required Map<String, dynamic> ticket,
+    required int? savedStars,
+  }) {
+    final assignedName = _s(ticket['assigned_admin_name']).isEmpty
+        ? (_s(ticket['assigned_admin_role']).isEmpty ? 'Staff' : _s(ticket['assigned_admin_role']))
+        : _s(ticket['assigned_admin_name']);
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.grey.shade300),
+        color: Colors.white,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Staff review',
+                  style: TextStyle(fontWeight: FontWeight.w900, fontSize: 15),
+                ),
+              ),
+              if (savedStars == null)
+                IconButton(
+                  onPressed: _dismissingReview ? null : _dismissReviewPrompt,
+                  tooltip: 'Close review',
+                  visualDensity: VisualDensity.compact,
+                  icon: _dismissingReview
+                      ? const SizedBox(
+                          height: 18,
+                          width: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.close_rounded),
+                ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            savedStars == null
+                ? 'How was $assignedName service? Give 1 to 5 star.'
+                : 'You rated $assignedName service.',
+            style: TextStyle(color: Colors.grey.shade700),
+          ),
+          const SizedBox(height: 8),
+          _buildStarRow(
+            stars: savedStars ?? _draftStars,
+            readOnly: savedStars != null,
+            onChanged: (value) => setState(() => _draftStars = value),
+          ),
+          if (savedStars == null) ...[
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerRight,
+              child: FilledButton(
+                onPressed: _submittingReview ? null : _submitReview,
+                child: _submittingReview
+                    ? const SizedBox(
+                        height: 18,
+                        width: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('Submit review'),
+              ),
+            ),
+          ] else
+            Text(
+              '$savedStars / 5 star',
+              style: TextStyle(
+                color: Colors.grey.shade700,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final currentAuthUid = Supabase.instance.client.auth.currentUser?.id ?? '';
@@ -201,7 +394,17 @@ class _SupportChatPageState extends State<SupportChatPage> {
                   ],
                 ),
               ]
-            : null,
+            : [
+                PopupMenuButton<String>(
+                  enabled: !_busy,
+                  onSelected: (value) async {
+                    if (value == 'close') await _closeTicket();
+                  },
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(value: 'close', child: Text('Close case')),
+                  ],
+                ),
+              ],
       ),
       body: StreamBuilder<Map<String, dynamic>?>(
         stream: _service.watchTicket(widget.ticketId),
@@ -217,6 +420,7 @@ class _SupportChatPageState extends State<SupportChatPage> {
 
           final status = _s(ticket['ticket_status']);
           final isClosed = status.toLowerCase() == SupportTicketService.statusClosed.toLowerCase();
+          final storedRating = _savedStars ?? _parseStars(ticket['staff_rating']);
 
           return Column(
             children: [
@@ -290,9 +494,9 @@ class _SupportChatPageState extends State<SupportChatPage> {
                       return const Center(child: CircularProgressIndicator());
                     }
                     final messages = msgSnap.data ?? const <Map<String, dynamic>>[];
-                    if (messages.isEmpty) {
-                      return const Center(child: Text('No messages yet.'));
-                    }
+                    final hasStaffServed = _s(ticket['assigned_admin_uid']).isNotEmpty ||
+                        _s(ticket['assigned_admin_name']).isNotEmpty ||
+                        messages.any((m) => _s(m['sender_role']).toLowerCase() != 'user');
 
                     WidgetsBinding.instance.addPostFrameCallback((_) {
                       if (_scrollCtrl.hasClients) {
@@ -300,57 +504,69 @@ class _SupportChatPageState extends State<SupportChatPage> {
                       }
                     });
 
-                    return ListView.builder(
-                      controller: _scrollCtrl,
-                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                      itemCount: messages.length,
-                      itemBuilder: (context, index) {
-                        final msg = messages[index];
-                        final isMine = _s(msg['sender_auth_uid']) == currentAuthUid;
-                        final bubbleColor = isMine ? Theme.of(context).colorScheme.primaryContainer : Colors.grey.shade200;
-                        final align = isMine ? CrossAxisAlignment.end : CrossAxisAlignment.start;
-                        final textAlign = isMine ? TextAlign.right : TextAlign.left;
+                    return Column(
+                      children: [
+                        Expanded(
+                          child: messages.isEmpty
+                              ? const Center(child: Text('No messages yet.'))
+                              : ListView.builder(
+                                  controller: _scrollCtrl,
+                                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                                  itemCount: messages.length,
+                                  itemBuilder: (context, index) {
+                                    final msg = messages[index];
+                                    final isMine = _s(msg['sender_auth_uid']) == currentAuthUid;
+                                    final bubbleColor = isMine
+                                        ? Theme.of(context).colorScheme.primaryContainer
+                                        : Colors.grey.shade200;
+                                    final align = isMine ? CrossAxisAlignment.end : CrossAxisAlignment.start;
+                                    final textAlign = isMine ? TextAlign.right : TextAlign.left;
 
-                        return Column(
-                          crossAxisAlignment: align,
-                          children: [
-                            Container(
-                              constraints: const BoxConstraints(maxWidth: 340),
-                              margin: const EdgeInsets.only(bottom: 10),
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                color: bubbleColor,
-                                borderRadius: BorderRadius.circular(16),
-                              ),
-                              child: Column(
-                                crossAxisAlignment: align,
-                                children: [
-                                  Text(
-                                    '${_s(msg['sender_role'])} • ${_s(msg['sender_name'])}',
-                                    textAlign: textAlign,
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      color: Colors.grey.shade700,
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 6),
-                                  Text(
-                                    _s(msg['message']),
-                                    textAlign: textAlign,
-                                  ),
-                                  const SizedBox(height: 6),
-                                  Text(
-                                    _fmtDate(msg['created_at']),
-                                    textAlign: textAlign,
-                                    style: TextStyle(fontSize: 11, color: Colors.grey.shade700),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        );
-                      },
+                                    return Column(
+                                      crossAxisAlignment: align,
+                                      children: [
+                                        Container(
+                                          constraints: const BoxConstraints(maxWidth: 340),
+                                          margin: const EdgeInsets.only(bottom: 10),
+                                          padding: const EdgeInsets.all(12),
+                                          decoration: BoxDecoration(
+                                            color: bubbleColor,
+                                            borderRadius: BorderRadius.circular(16),
+                                          ),
+                                          child: Column(
+                                            crossAxisAlignment: align,
+                                            children: [
+                                              Text(
+                                                '${_s(msg['sender_role'])} • ${_s(msg['sender_name'])}',
+                                                textAlign: textAlign,
+                                                style: TextStyle(
+                                                  fontSize: 11,
+                                                  color: Colors.grey.shade700,
+                                                  fontWeight: FontWeight.w700,
+                                                ),
+                                              ),
+                                              const SizedBox(height: 6),
+                                              Text(
+                                                _s(msg['message']),
+                                                textAlign: textAlign,
+                                              ),
+                                              const SizedBox(height: 6),
+                                              Text(
+                                                _fmtDate(msg['created_at']),
+                                                textAlign: textAlign,
+                                                style: TextStyle(fontSize: 11, color: Colors.grey.shade700),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ],
+                                    );
+                                  },
+                                ),
+                        ),
+                        if (isClosed && !widget.isAgentView && hasStaffServed && !_reviewDismissed)
+                          _buildReviewCard(ticket: ticket, savedStars: storedRating),
+                      ],
                     );
                   },
                 ),

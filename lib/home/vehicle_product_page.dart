@@ -90,6 +90,56 @@ class _VehicleProductPageState extends State<VehicleProductPage> {
     return 'Outlet';
   }
 
+  String _hourLabel(int hour) {
+    final displayHour = hour % 12 == 0 ? 12 : hour % 12;
+    final suffix = hour >= 12 ? 'PM' : 'AM';
+    return '$displayHour:00 $suffix';
+  }
+
+  Future<TimeOfDay?> _pickHourOnly({
+    required String title,
+    required TimeOfDay initialTime,
+  }) async {
+    final pickedHour = await showModalBottomSheet<int>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) {
+        return SafeArea(
+          child: SizedBox(
+            height: 420,
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                  child: Text(
+                    title,
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+                  ),
+                ),
+                const Divider(height: 1),
+                Expanded(
+                  child: ListView.builder(
+                    itemCount: 24,
+                    itemBuilder: (context, index) {
+                      final selected = index == initialTime.hour;
+                      return ListTile(
+                        title: Text(_hourLabel(index)),
+                        trailing: selected ? const Icon(Icons.check_rounded) : null,
+                        onTap: () => Navigator.of(ctx).pop(index),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    if (pickedHour == null) return null;
+    return TimeOfDay(hour: pickedHour, minute: 0);
+  }
+
   Future<void> _pickRentalTime() async {
     final now = DateTime.now();
 
@@ -108,19 +158,19 @@ class _VehicleProductPageState extends State<VehicleProductPage> {
 
     if (range == null) return;
 
-    final startTime = await showTimePicker(
-      context: context,
+    final startTime = await _pickHourOnly(
+      title: 'Select start hour',
       initialTime: _start != null
-          ? TimeOfDay(hour: _start!.hour, minute: _start!.minute)
-          : TimeOfDay(hour: now.hour, minute: (now.minute ~/ 5) * 5),
+          ? TimeOfDay(hour: _start!.hour, minute: 0)
+          : TimeOfDay(hour: now.hour, minute: 0),
     );
     if (startTime == null) return;
 
-    final endTime = await showTimePicker(
-      context: context,
+    final endTime = await _pickHourOnly(
+      title: 'Select end hour',
       initialTime: _end != null
-          ? TimeOfDay(hour: _end!.hour, minute: _end!.minute)
-          : TimeOfDay(hour: startTime.hour, minute: startTime.minute),
+          ? TimeOfDay(hour: _end!.hour, minute: 0)
+          : TimeOfDay(hour: startTime.hour, minute: 0),
     );
     if (endTime == null) return;
 
@@ -129,7 +179,7 @@ class _VehicleProductPageState extends State<VehicleProductPage> {
       range.start.month,
       range.start.day,
       startTime.hour,
-      startTime.minute,
+      0,
     );
 
     final end = DateTime(
@@ -137,7 +187,7 @@ class _VehicleProductPageState extends State<VehicleProductPage> {
       range.end.month,
       range.end.day,
       endTime.hour,
-      endTime.minute,
+      0,
     );
 
     if (!end.isAfter(start)) {

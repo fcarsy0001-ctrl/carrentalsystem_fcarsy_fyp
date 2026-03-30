@@ -1,10 +1,14 @@
+import 'dart:async';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../config/supabase_config.dart';
+import '../services/booking_hold_service.dart';
 
 class MyOrderDetailsPage extends StatefulWidget {
   const MyOrderDetailsPage({
@@ -26,11 +30,20 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
     '6, Jalan P. Ramlee',
     '111-109, Jalan Malinja 3, Taman Bunga Raya, 53000 Kuala Lumpur, Wilayah Persekutuan Kuala Lumpur',
   ];
+  static const _evidenceSides = <String>['front', 'left', 'right', 'back'];
+  static const _evidenceBucket = 'booking_evidence';
 
   late Map<String, dynamic> _b;
   late Map<String, dynamic> _v;
 
   String _dropoff = '';
+  Timer? _ticker;
+  StreamSubscription<List<Map<String, dynamic>>>? _bookingSubscription;
+  DateTime _liveNow = DateTime.now();
+  bool _processingHoldAction = false;
+  bool _processingLifecycleAction = false;
+  final Map<String, Uint8List> _pickupLocalPhotos = <String, Uint8List>{};
+  final Map<String, Uint8List> _dropoffLocalPhotos = <String, Uint8List>{};
 
   @override
   void initState() {
@@ -42,7 +55,19 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
     _v = vehicle;
     final loc = (_v['vehicle_location'] ?? _b['vehicle_location'] ?? '').toString();
     _dropoff = loc.isEmpty ? _outlets.first : loc;
+    _refreshBookingMeta();
+    _startRealtimeBookingWatch();
+    _restartTickerIfNeeded();
   }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    _bookingSubscription?.cancel();
+    super.dispose();
+  }
+
+  BookingHoldService get _holdSvc => BookingHoldService(_supa);
 
   String _vehiclePhotoPublicUrl(String? path) {
     if (path == null || path.trim().isEmpty) return '';
@@ -59,72 +84,268 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
 
   DateTime? _dt(dynamic v) {
     if (v == null) return null;
-    if (v is DateTime) return v;
+    if (v is DateTime) return v.isUtc ? v.toLocal() : v;
     try {
-      return DateTime.parse(v.toString());
+      final parsed = DateTime.parse(v.toString());
+      return parsed.isUtc ? parsed.toLocal() : parsed;
     } catch (_) {
       return null;
     }
   }
 
-  String _fmtDate(DateTime d) => '${d.day}/${d.month}/${d.year}';
+  DateTime _localTime(DateTime d) => d.isUtc ? d.toLocal() : d;
 
-  String _fmtTime(DateTime d) {
-    var h = d.hour;
-    final m = d.minute.toString().padLeft(2, '0');
+  String _fmtDate(DateTime d) {
+    final local = _localTime(d);
+    return '${local.day}/${local.month}/${local.year}';
+  }
+
+  String _fmtTime(DateTime d, {bool withSeconds = false}) {
+    final local = _localTime(d);
+    var h = local.hour;
+    final m = local.minute.toString().padLeft(2, '0');
+    final s = local.second.toString().padLeft(2, '0');
     final ap = h >= 12 ? 'pm' : 'am';
     h %= 12;
     if (h == 0) h = 12;
-    return '$h:$m$ap';
+    return withSeconds ? '$h:$m:$s$ap' : '$h:$m$ap';
   }
+
+  String _fmtDateTime(DateTime d, {bool withSeconds = false}) =>
+      '${_fmtDate(d)} ${_fmtTime(d, withSeconds: withSeconds)}';
 
   String get _rawStatus => (_b['booking_status'] ?? '').toString();
 
-  String _normStatus(String status) {
-    final s = status.trim().toLowerCase();
-    if (s == 'cancel' || s == 'cancelled' || s == 'canceled') return 'cancelled';
-    if (s == 'deactive' || s == 'deactivated') return 'deactive';
-    if (s == 'active') return 'active';
-    if (s == 'inactive') return 'inactive';
-    return s;
+  bool get _isHoldingActive => _holdSvc.isActiveHoldRow(_b, now: _liveNow);
+
+  bool get _isHoldingExpired {
+    if (_normStatus(_rawStatus) != 'holding') return false;
+    final expiry = _holdSvc.parseHoldExpiryFromRow(_b);
+    if (expiry == null) return true;
+    return !expiry.isAfter(_liveNow);
+  }
+
+  DateTime? get _rentalStart => _dt(_b['rental_start']);
+  DateTime? get _rentalEnd => _dt(_b['rental_end']);
+  DateTime? get _createdAt => _dt(_b['created_at']) ?? _dt(_b['booking_created_at']);
+  DateTime? get _pickupCompletedAt => _dt(_b['pickup_completed_at']);
+  DateTime? get _dropoffCompletedAt => _dt(_b['dropoff_completed_at']) ?? _dt(_b['actual_dropoff_at']);
+
+  bool get _isBlockedStatus {
+    final s = _normStatus(_rawStatus);
+    return s == 'cancelled' || s == 'deactive';
+  }
+
+  bool get _hasPickupCompleted => _pickupCompletedAt != null;
+  bool get _hasDropoffCompleted {
+    final s = _normStatus(_rawStatus);
+    if (s == 'inactive') return true;
+    return _dropoffCompletedAt != null;
   }
 
   bool get _isIncoming {
-    final start = _dt(_b['rental_start']);
-    final end = _dt(_b['rental_end']);
-    if (start == null || end == null) return false;
-    final now = DateTime.now();
-    return now.isBefore(start);
+    final start = _rentalStart;
+    final end = _rentalEnd;
+    if (start == null || end == null || _isHoldingActive || _isBlockedStatus || _hasDropoffCompleted) return false;
+    return _liveNow.isBefore(start);
+  }
+
+  bool get _isReadyForPickup {
+    final start = _rentalStart;
+    final end = _rentalEnd;
+    if (start == null || end == null || _isHoldingActive || _isBlockedStatus || _hasDropoffCompleted) return false;
+    return (_liveNow.isAtSameMomentAs(start) || _liveNow.isAfter(start)) &&
+        _liveNow.isBefore(end) &&
+        !_hasPickupCompleted;
   }
 
   bool get _isOngoing {
-    final start = _dt(_b['rental_start']);
-    final end = _dt(_b['rental_end']);
+    if (_isHoldingActive || _isBlockedStatus || _hasDropoffCompleted) return false;
+    if (!_hasPickupCompleted) return false;
+    final start = _pickupCompletedAt ?? _rentalStart;
+    final end = _rentalEnd;
     if (start == null || end == null) return false;
-    final now = DateTime.now();
-    return (now.isAtSameMomentAs(start) || now.isAfter(start)) && now.isBefore(end);
+    return (_liveNow.isAtSameMomentAs(start) || _liveNow.isAfter(start)) && _liveNow.isBefore(end);
+  }
+
+  bool get _isOvertime {
+    if (_isHoldingActive || _isBlockedStatus || !_hasPickupCompleted || _hasDropoffCompleted) return false;
+    final end = _rentalEnd;
+    if (end == null) return false;
+    return _liveNow.isAfter(end);
+  }
+
+  bool get _canShowVehicleControl => _hasPickupCompleted && !_hasDropoffCompleted && !_isBlockedStatus;
+
+  bool get _canUserCancel {
+    if (_isHoldingActive || _isBlockedStatus || _hasPickupCompleted || _hasDropoffCompleted) return false;
+    final start = _rentalStart;
+    final moreThan3DaysBefore = start != null && start.difference(_liveNow) >= const Duration(days: 3);
+    final createdAt = _createdAt;
+    final within30Minutes = createdAt != null && _liveNow.difference(createdAt) <= const Duration(minutes: 30);
+    return moreThan3DaysBefore || within30Minutes;
+  }
+
+  String get _cancelRuleText {
+    final start = _rentalStart;
+    final moreThan3DaysBefore = start != null && start.difference(_liveNow) >= const Duration(days: 3);
+    final createdAt = _createdAt;
+    final within30Minutes = createdAt != null && _liveNow.difference(createdAt) <= const Duration(minutes: 30);
+    if (moreThan3DaysBefore) {
+      return 'Eligible to cancel because the rental starts more than 3 days from now.';
+    }
+    if (within30Minutes) {
+      return 'Eligible to cancel because this order was created within the 30-minute grace window.';
+    }
+    return 'User cancellation is allowed only more than 3 days before rental start or within 30 minutes after order creation.';
   }
 
   String get _statusLabel {
     final s = _normStatus(_rawStatus);
     if (s == 'cancelled') return 'Cancelled';
     if (s == 'deactive') return 'Deactive by Admin';
-    if (_isIncoming) return 'Incoming';
+    if (_isHoldingActive) return 'Holding';
+    if (_hasDropoffCompleted) return 'Completed';
+    if (_isReadyForPickup) return 'Pickup Ready';
+    if (_isOvertime) return 'Overtime';
     if (_isOngoing) return 'Ongoing';
-    return 'Inactive';
+    if (_isIncoming) return 'Incoming';
+    if (s == 'paid') return 'Paid';
+    if (s == 'active') return 'Active';
+    if (s == 'inactive') return 'Inactive';
+    return s.isEmpty ? 'Unknown' : s[0].toUpperCase() + s.substring(1);
   }
 
   Color get _statusColor {
     final s = _normStatus(_rawStatus);
     if (s == 'cancelled' || s == 'deactive') return Colors.red;
-    if (_isIncoming) return Colors.blue;
+    if (_isHoldingActive) return Colors.orange;
+    if (_hasDropoffCompleted) return Colors.grey;
+    if (_isReadyForPickup) return Colors.teal;
+    if (_isOvertime) return Colors.deepOrange;
     if (_isOngoing) return Colors.green;
+    if (_isIncoming) return Colors.blue;
     return Colors.grey;
   }
 
+  void _restartTickerIfNeeded() {
+    _ticker?.cancel();
+    if (!_isHoldingActive && !_isIncoming && !_isReadyForPickup && !_isOngoing && !_isOvertime) return;
+    _ticker = Timer.periodic(const Duration(seconds: 1), (_) async {
+      if (!mounted) return;
+      setState(() => _liveNow = DateTime.now());
+      if (_isHoldingExpired) {
+        await _expireHoldingIfNeeded(showSnack: true);
+      }
+    });
+  }
+
+  void _startRealtimeBookingWatch() {
+    final bookingId = (_b['booking_id'] ?? '').toString();
+    if (bookingId.isEmpty) return;
+    _bookingSubscription?.cancel();
+    _bookingSubscription = _supa
+        .from('booking')
+        .stream(primaryKey: const ['booking_id'])
+        .eq('booking_id', bookingId)
+        .listen((rows) {
+      if (!mounted || rows.isEmpty) return;
+      final latest = Map<String, dynamic>.from(rows.first);
+      setState(() {
+        _b.addAll(latest);
+        _liveNow = DateTime.now();
+      });
+      _restartTickerIfNeeded();
+    });
+  }
+
+  Future<void> _refreshBookingMeta() async {
+    final bookingId = (_b['booking_id'] ?? '').toString();
+    if (bookingId.isEmpty) return;
+    final row = await _holdSvc.fetchBookingMeta(bookingId);
+    if (row == null || !mounted) return;
+    setState(() {
+      _b.addAll(row);
+      _liveNow = DateTime.now();
+    });
+    _restartTickerIfNeeded();
+    if (_isHoldingExpired) {
+      await _expireHoldingIfNeeded(showSnack: false);
+    }
+  }
+
+  Future<void> _expireHoldingIfNeeded({required bool showSnack}) async {
+    if (_processingHoldAction) return;
+    final bookingId = (_b['booking_id'] ?? '').toString();
+    if (bookingId.isEmpty) return;
+    _processingHoldAction = true;
+    try {
+      final expired = await _holdSvc.expireIfNeeded(bookingId: bookingId, row: _b);
+      if (!mounted) return;
+      if (!expired) {
+        await _refreshBookingMeta();
+        return;
+      }
+      setState(() {
+        _b['booking_status'] = 'Cancelled';
+        _liveNow = DateTime.now();
+      });
+      _ticker?.cancel();
+      if (showSnack) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Hold time ended. This order was cancelled automatically.')),
+        );
+      }
+    } finally {
+      _processingHoldAction = false;
+    }
+  }
+
+  Future<void> _cancelHolding() async {
+    final bookingId = (_b['booking_id'] ?? '').toString();
+    if (bookingId.isEmpty || _processingHoldAction) return;
+    setState(() => _processingHoldAction = true);
+    try {
+      final cancelled = await _holdSvc.cancelHold(bookingId);
+      if (!mounted) return;
+      if (!cancelled) {
+        await _refreshBookingMeta();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Cancel failed. Please try refresh again.'), backgroundColor: Colors.red),
+        );
+        return;
+      }
+      setState(() {
+        _b['booking_status'] = 'Cancelled';
+        _liveNow = DateTime.now();
+      });
+      _ticker?.cancel();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Holding order cancelled. The car slot is released.')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _processingHoldAction = false);
+      } else {
+        _processingHoldAction = false;
+      }
+    }
+  }
+
+  String _normStatus(String status) {
+    final s = status.trim().toLowerCase();
+    if (s == 'cancel' || s == 'cancelled' || s == 'canceled') return 'cancelled';
+    if (s == 'deactive' || s == 'deactivated') return 'deactive';
+    if (s == 'holding') return 'holding';
+    if (s == 'paid') return 'paid';
+    if (s == 'active') return 'active';
+    if (s == 'inactive') return 'inactive';
+    return s;
+  }
+
   String _timeRangeText() {
-    final s = _dt(_b['rental_start']);
-    final e = _dt(_b['rental_end']);
+    final s = _rentalStart;
+    final e = _rentalEnd;
     if (s == null || e == null) return '-';
     return '${_fmtDate(s)} - ${_fmtDate(e)}\n${_fmtTime(s)} - ${_fmtTime(e)}';
   }
@@ -134,11 +355,20 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
     if (status == 'cancelled') return 'Cancelled';
     if (status == 'deactive') return 'Please contact admin';
 
-    final s = _dt(_b['rental_start']);
-    final e = _dt(_b['rental_end']);
+    final s = _rentalStart;
+    final e = _rentalEnd;
     if (s == null || e == null) return '-';
 
-    final now = DateTime.now();
+    final now = _liveNow;
+
+    if (_isHoldingActive) {
+      final remaining = _holdSvc.remainingForRow(_b, now: now) ?? Duration.zero;
+      return 'Hold expires in ${_holdSvc.formatRemaining(remaining)}';
+    }
+
+    if (_hasDropoffCompleted) {
+      return 'Dropped off';
+    }
 
     if (_isIncoming) {
       final diff = s.difference(now);
@@ -150,6 +380,14 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
       return 'Starts in ${math.max(0, hours)} hour';
     }
 
+    if (_isReadyForPickup) {
+      return 'Pickup available now';
+    }
+
+    if (_isOvertime) {
+      return 'Penalty ${_money(_overtimePenaltyAmount())}';
+    }
+
     final diff = e.difference(now);
     if (diff.isNegative) return 'Completed';
     final totalMins = diff.inMinutes;
@@ -158,7 +396,6 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
     if (days > 0) return '$days day ${hours}h left';
     return '${math.max(0, hours)} hour left';
   }
-
 
   int _fuelPercent() {
     final raw = _v['fuel_percent'] ?? _b['fuel_percent'];
@@ -257,14 +494,540 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
     if (chosen == null) return;
     setState(() => _dropoff = chosen);
 
-    // Try to persist (only if your DB has a column, else silently ignore).
     final bookingId = (_b['booking_id'] ?? '').toString();
     if (bookingId.isEmpty) return;
     try {
       await _supa.from('booking').update({'dropoff_location': chosen}).eq('booking_id', bookingId);
+      _b['dropoff_location'] = chosen;
     } catch (_) {
       // If column doesn't exist or RLS blocks it, keep UI-only.
     }
+  }
+
+  double _moneyValue(dynamic v) {
+    final n = v is num ? v.toDouble() : double.tryParse(v.toString()) ?? 0;
+    return n;
+  }
+
+  String _money(dynamic v) => 'RM ${_moneyValue(v).toStringAsFixed(2)}';
+
+  int _bookedHours() {
+    final start = _rentalStart;
+    final end = _rentalEnd;
+    if (start == null || end == null) return 0;
+    final minutes = end.difference(start).inMinutes;
+    if (minutes <= 0) return 0;
+    return (minutes / 60).ceil();
+  }
+
+  double _baseHourlyRate() {
+    final totalAmount = _moneyValue(_b['total_rental_amount']);
+    final bookedHours = _bookedHours();
+    if (totalAmount > 0 && bookedHours > 0) {
+      return totalAmount / bookedHours;
+    }
+    final dailyRate = _moneyValue(_v['daily_rate']);
+    if (dailyRate > 0) {
+      return dailyRate / 24;
+    }
+    return 0;
+  }
+
+  int _overtimeHoursRoundedUp({DateTime? effectiveDropoffTime}) {
+    final end = _rentalEnd;
+    if (end == null) return 0;
+    final compare = effectiveDropoffTime ?? _dropoffCompletedAt ?? _liveNow;
+    if (!compare.isAfter(end)) return 0;
+    final minutes = compare.difference(end).inMinutes;
+    if (minutes <= 0) return 0;
+    return (minutes / 60).ceil();
+  }
+
+  double _overtimePenaltyAmount({DateTime? effectiveDropoffTime}) {
+    final hours = _overtimeHoursRoundedUp(effectiveDropoffTime: effectiveDropoffTime);
+    if (hours <= 0) return 0;
+    final rate = _baseHourlyRate();
+    return rate <= 0 ? 0 : hours * rate * 2;
+  }
+
+  String _lockStateLabel() {
+    final raw = (_b['lock_demo_state'] ?? 'locked').toString().trim().toLowerCase();
+    if (raw == 'unlocked') return 'Unlocked';
+    return 'Locked';
+  }
+
+  String? _evidenceUrl(String stage, String side) {
+    final raw = (_b['${stage}_${side}_url'] ?? '').toString().trim();
+    return raw.isEmpty ? null : raw;
+  }
+
+  Map<String, Uint8List> _localEvidencePhotos(String stage) {
+    return stage == 'pickup' ? _pickupLocalPhotos : _dropoffLocalPhotos;
+  }
+
+  bool _hasAnyEvidence(String stage) {
+    for (final side in _evidenceSides) {
+      if ((_evidenceUrl(stage, side) ?? '').isNotEmpty) return true;
+      if (_localEvidencePhotos(stage).containsKey(side)) return true;
+    }
+    return false;
+  }
+
+  Future<void> _cancelUpcomingOrder() async {
+    if (!_canUserCancel || _processingLifecycleAction) return;
+    final bookingId = (_b['booking_id'] ?? '').toString().trim();
+    if (bookingId.isEmpty) return;
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Cancel order'),
+        content: Text('This action will cancel booking $bookingId. Continue?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Back')),
+          FilledButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Cancel order')),
+        ],
+      ),
+    );
+
+    if (ok != true) return;
+
+    setState(() => _processingLifecycleAction = true);
+    final cancelledAtUtc = DateTime.now().toUtc().toIso8601String();
+    try {
+      var storedCancelStatus = 'Cancelled';
+      final patch = <String, dynamic>{
+        'booking_status': storedCancelStatus,
+        'cancelled_by_user_at': cancelledAtUtc,
+      };
+
+      try {
+        await _supa.from('booking').update(patch).eq('booking_id', bookingId);
+      } on PostgrestException catch (e) {
+        final msg = e.message.toLowerCase();
+        final blockedByNotificationTrigger =
+            e.code == '42501' && msg.contains('notification');
+        if (!blockedByNotificationTrigger) rethrow;
+
+        storedCancelStatus = 'Cancel';
+        await _supa.from('booking').update({
+          'booking_status': storedCancelStatus,
+          'cancelled_by_user_at': cancelledAtUtc,
+        }).eq('booking_id', bookingId);
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _b['booking_status'] = storedCancelStatus;
+        _b['cancelled_by_user_at'] = cancelledAtUtc;
+        _liveNow = DateTime.now();
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Order cancelled successfully.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to cancel order: $e'), backgroundColor: Colors.red),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _processingLifecycleAction = false);
+      } else {
+        _processingLifecycleAction = false;
+      }
+    }
+  }
+
+  Future<Map<String, String>> _uploadEvidence(String stage, Map<String, _CapturedEvidence> files) async {
+    final bookingId = (_b['booking_id'] ?? '').toString().trim();
+    if (bookingId.isEmpty || files.isEmpty) return const <String, String>{};
+    final urls = <String, String>{};
+    for (final entry in files.entries) {
+      final side = entry.key;
+      final file = entry.value;
+      final ext = file.extension.toLowerCase();
+      final contentType = ext == 'png' ? 'image/png' : 'image/jpeg';
+      final path = 'orders/$bookingId/$stage/${side}_${DateTime.now().millisecondsSinceEpoch}.$ext';
+      await _supa.storage.from(_evidenceBucket).uploadBinary(
+        path,
+        file.bytes,
+        fileOptions: FileOptions(contentType: contentType, upsert: true),
+      );
+      urls[side] = _supa.storage.from(_evidenceBucket).getPublicUrl(path);
+    }
+    return urls;
+  }
+
+  Future<void> _capturePickupFlow() async {
+    if (_processingLifecycleAction) return;
+    final capture = await Navigator.of(context).push<Map<String, _CapturedEvidence>>(
+      MaterialPageRoute(
+        builder: (_) => const _EvidenceCapturePage(
+          title: 'Pickup inspection',
+          subtitle: 'Take 4 photos before the trip starts: front, left, right, and back.',
+        ),
+      ),
+    );
+    if (capture == null || capture.length != _evidenceSides.length) return;
+
+    setState(() => _processingLifecycleAction = true);
+    final pickupTime = DateTime.now();
+    try {
+      Map<String, String> uploadedUrls = const <String, String>{};
+      var evidenceStoredRemotely = false;
+      try {
+        uploadedUrls = await _uploadEvidence('pickup', capture);
+        evidenceStoredRemotely = uploadedUrls.isNotEmpty;
+      } catch (_) {
+        evidenceStoredRemotely = false;
+      }
+
+      final bookingId = (_b['booking_id'] ?? '').toString().trim();
+      if (bookingId.isEmpty) return;
+
+      await _supa.from('booking').update({'booking_status': 'Active'}).eq('booking_id', bookingId);
+
+      final extraPatch = <String, dynamic>{
+        'pickup_completed_at': pickupTime.toUtc().toIso8601String(),
+        'lock_demo_state': 'locked',
+        for (final side in _evidenceSides)
+          'pickup_${side}_url': uploadedUrls[side],
+      };
+      try {
+        await _supa.from('booking').update(extraPatch).eq('booking_id', bookingId);
+      } catch (_) {
+        // Demo-safe: keep UI state even if schema is not ready.
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _b['booking_status'] = 'Active';
+        _b['pickup_completed_at'] = pickupTime.toUtc().toIso8601String();
+        _b['lock_demo_state'] = 'locked';
+        for (final side in _evidenceSides) {
+          if ((uploadedUrls[side] ?? '').isNotEmpty) {
+            _b['pickup_${side}_url'] = uploadedUrls[side];
+          }
+          _pickupLocalPhotos[side] = capture[side]!.bytes;
+        }
+        _liveNow = DateTime.now();
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            evidenceStoredRemotely
+                ? 'Pickup completed. Trip is now officially ongoing.'
+                : 'Pickup completed in demo mode. Evidence stayed on device because booking evidence storage/schema is not ready.',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Pickup failed: $e'), backgroundColor: Colors.red),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _processingLifecycleAction = false);
+      } else {
+        _processingLifecycleAction = false;
+      }
+    }
+  }
+
+  Future<void> _setLockState(String value) async {
+    if (_processingLifecycleAction) return;
+    final bookingId = (_b['booking_id'] ?? '').toString().trim();
+    if (bookingId.isEmpty) return;
+    setState(() => _processingLifecycleAction = true);
+    try {
+      try {
+        await _supa.from('booking').update({'lock_demo_state': value}).eq('booking_id', bookingId);
+      } catch (_) {
+        // Demo-safe local update.
+      }
+      if (!mounted) return;
+      setState(() {
+        _b['lock_demo_state'] = value;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(value == 'unlocked' ? 'Car unlocked (demo).' : 'Car locked (demo).')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _processingLifecycleAction = false);
+      } else {
+        _processingLifecycleAction = false;
+      }
+    }
+  }
+
+  Future<void> _dropoffCar() async {
+    if (_processingLifecycleAction || !_canShowVehicleControl) return;
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Drop off car'),
+        content: Text(
+          _isOvertime
+              ? 'This order is already overtime. Continue to capture return photos and finish the booking?'
+              : 'Take return photos and complete the booking now?',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Back')),
+          FilledButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Continue')),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+
+    final capture = await Navigator.of(context).push<Map<String, _CapturedEvidence>>(
+      MaterialPageRoute(
+        builder: (_) => const _EvidenceCapturePage(
+          title: 'Drop-off inspection',
+          subtitle: 'Take 4 return photos: front, left, right, and back. Staff and admin can review these for damages.',
+        ),
+      ),
+    );
+    if (capture == null || capture.length != _evidenceSides.length) return;
+
+    setState(() => _processingLifecycleAction = true);
+    final dropoffTime = DateTime.now();
+    final penalty = _overtimePenaltyAmount(effectiveDropoffTime: dropoffTime);
+    try {
+      Map<String, String> uploadedUrls = const <String, String>{};
+      var evidenceStoredRemotely = false;
+      try {
+        uploadedUrls = await _uploadEvidence('dropoff', capture);
+        evidenceStoredRemotely = uploadedUrls.isNotEmpty;
+      } catch (_) {
+        evidenceStoredRemotely = false;
+      }
+
+      final bookingId = (_b['booking_id'] ?? '').toString().trim();
+      if (bookingId.isEmpty) return;
+
+      await _supa.from('booking').update({'booking_status': 'Inactive'}).eq('booking_id', bookingId);
+
+      final extraPatch = <String, dynamic>{
+        'dropoff_completed_at': dropoffTime.toUtc().toIso8601String(),
+        'actual_dropoff_at': dropoffTime.toUtc().toIso8601String(),
+        'overtime_penalty_amount': penalty,
+        'lock_demo_state': 'locked',
+        for (final side in _evidenceSides)
+          'dropoff_${side}_url': uploadedUrls[side],
+      };
+      try {
+        await _supa.from('booking').update(extraPatch).eq('booking_id', bookingId);
+      } catch (_) {
+        // Demo-safe: keep the status transition even if extra columns are missing.
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _b['booking_status'] = 'Inactive';
+        _b['dropoff_completed_at'] = dropoffTime.toUtc().toIso8601String();
+        _b['actual_dropoff_at'] = dropoffTime.toUtc().toIso8601String();
+        _b['overtime_penalty_amount'] = penalty;
+        _b['lock_demo_state'] = 'locked';
+        for (final side in _evidenceSides) {
+          if ((uploadedUrls[side] ?? '').isNotEmpty) {
+            _b['dropoff_${side}_url'] = uploadedUrls[side];
+          }
+          _dropoffLocalPhotos[side] = capture[side]!.bytes;
+        }
+        _liveNow = DateTime.now();
+      });
+
+      final penaltyText = penalty > 0
+          ? ' Overtime penalty: ${_money(penalty)} (1 hour x2 charge, rounded up).'
+          : '';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            evidenceStoredRemotely
+                ? 'Drop-off completed.$penaltyText'
+                : 'Drop-off completed in demo mode. Evidence stayed on device because booking evidence storage/schema is not ready.$penaltyText',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Drop-off failed: $e'), backgroundColor: Colors.red),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _processingLifecycleAction = false);
+      } else {
+        _processingLifecycleAction = false;
+      }
+    }
+  }
+
+  Widget _buildLifecycleActionCard() {
+    if (_isHoldingActive) return const SizedBox.shrink();
+    return _SectionCard(
+      title: 'Order Actions',
+      trailing: Text(
+        _hoursLeftText(),
+        style: TextStyle(color: _statusColor, fontWeight: FontWeight.w800, fontSize: 12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (_isIncoming || _isReadyForPickup) ...[
+            Text(
+              _cancelRuleText,
+              style: TextStyle(color: Colors.grey.shade800, height: 1.35),
+            ),
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _canUserCancel && !_processingLifecycleAction ? _cancelUpcomingOrder : null,
+                icon: _processingLifecycleAction
+                    ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.cancel_outlined),
+                label: const Text('Cancel order'),
+              ),
+            ),
+          ],
+          if (_isReadyForPickup) ...[
+            const SizedBox(height: 12),
+            Text(
+              'Pickup is available now. Complete the 4-side photo inspection first. Once submitted, the order becomes officially ongoing.',
+              style: TextStyle(color: Colors.grey.shade800, height: 1.35),
+            ),
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: _processingLifecycleAction ? null : _capturePickupFlow,
+                icon: _processingLifecycleAction
+                    ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : const Icon(Icons.car_rental),
+                label: const Text('Pick up car'),
+              ),
+            ),
+          ],
+          if (_canShowVehicleControl) ...[
+            Text(
+              _isOvertime
+                  ? 'Trip is overtime now. Lock/unlock is still available for demo, and you can drop off from the 3-dot menu.'
+                  : 'Trip is ongoing. Lock/unlock is demo only, and drop-off is available from the 3-dot menu.',
+              style: TextStyle(color: Colors.grey.shade800, height: 1.35),
+            ),
+          ],
+          if (!_isIncoming && !_isReadyForPickup && !_canShowVehicleControl && !_hasDropoffCompleted) ...[
+            Text(
+              'No extra user action is needed right now.',
+              style: TextStyle(color: Colors.grey.shade800, height: 1.35),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildVehicleControlCard() {
+    if (!_canShowVehicleControl) return const SizedBox.shrink();
+    final locked = _lockStateLabel() == 'Locked';
+    return _SectionCard(
+      title: 'Demo Car Control',
+      trailing: Text(
+        _lockStateLabel(),
+        style: TextStyle(
+          color: locked ? Colors.indigo : Colors.green,
+          fontWeight: FontWeight.w800,
+          fontSize: 12,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Demo buttons only. Connect these later to the real telematics / IoT command service.',
+            style: TextStyle(color: Colors.grey.shade800, height: 1.35),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton.tonalIcon(
+                  onPressed: _processingLifecycleAction ? null : () => _setLockState('locked'),
+                  icon: const Icon(Icons.lock_outline),
+                  label: const Text('Lock'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: FilledButton.tonalIcon(
+                  onPressed: _processingLifecycleAction ? null : () => _setLockState('unlocked'),
+                  icon: const Icon(Icons.lock_open_outlined),
+                  label: const Text('Unlock'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPenaltyCard() {
+    final dropoffAt = _dropoffCompletedAt;
+    final penalty = _overtimePenaltyAmount(effectiveDropoffTime: dropoffAt);
+    final overtimeHours = _overtimeHoursRoundedUp(effectiveDropoffTime: dropoffAt);
+    if (penalty <= 0 && !_isOvertime) return const SizedBox.shrink();
+    return _SectionCard(
+      title: 'Overtime Penalty',
+      trailing: Text(
+        _money(penalty),
+        style: const TextStyle(fontWeight: FontWeight.w900, color: Colors.deepOrange),
+      ),
+      child: Text(
+        'Penalty rule applied: each overtime hour is charged at 2x the normal hourly rate. '
+        'Hours are rounded up. Current overtime: ${math.max(1, overtimeHours)} hour(s).',
+        style: TextStyle(color: Colors.grey.shade800, height: 1.35),
+      ),
+    );
+  }
+
+  Widget _buildEvidenceCard(String stage, String title, String emptyText) {
+    if (!_hasAnyEvidence(stage)) return const SizedBox.shrink();
+    return _SectionCard(
+      title: title,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            stage == 'dropoff'
+                ? 'These photos should be reviewed by staff/admin for any visible damage.'
+                : 'Pickup evidence captured before the trip officially started.',
+            style: TextStyle(color: Colors.grey.shade800, height: 1.35),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: _evidenceSides.map((side) {
+              final url = _evidenceUrl(stage, side);
+              final local = _localEvidencePhotos(stage)[side];
+              return _EvidencePreviewCard(
+                label: side[0].toUpperCase() + side.substring(1),
+                imageUrl: url,
+                localBytes: local,
+                emptyText: emptyText,
+              );
+            }).toList(),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -286,6 +1049,28 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
         leading: const BackButton(),
         centerTitle: true,
         title: const Text('My Orders'),
+        actions: [
+          if (_canShowVehicleControl)
+            PopupMenuButton<String>(
+              onSelected: (value) async {
+                if (value == 'dropoff') {
+                  await _dropoffCar();
+                }
+              },
+              itemBuilder: (_) => const [
+                PopupMenuItem<String>(
+                  value: 'dropoff',
+                  child: Row(
+                    children: [
+                      Icon(Icons.keyboard_return_outlined),
+                      SizedBox(width: 10),
+                      Text('Drop off car'),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+        ],
       ),
       body: SafeArea(
         child: Center(
@@ -294,7 +1079,6 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
             child: ListView(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 18),
               children: [
-                // Car picture
                 AspectRatio(
                   aspectRatio: 16 / 9,
                   child: ClipRRect(
@@ -317,8 +1101,6 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
                   ),
                 ),
                 const SizedBox(height: 12),
-
-                // Name + status
                 Row(
                   children: [
                     Expanded(
@@ -348,8 +1130,6 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
                   ],
                 ),
                 const SizedBox(height: 10),
-
-                // Fuel
                 Row(
                   children: [
                     Expanded(
@@ -367,25 +1147,67 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
                     ),
                   ],
                 ),
-
                 const SizedBox(height: 14),
-
-                // Time card
+                if (_isHoldingActive) ...[
+                  _SectionCard(
+                    title: 'Holding Timer',
+                    trailing: Text(
+                      _hoursLeftText(),
+                      style: const TextStyle(color: Colors.orange, fontWeight: FontWeight.w800, fontSize: 12),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'This booking is reserved for you only during the hold period. Sign the contract and make payment before the timer ends.',
+                          style: TextStyle(color: Colors.grey.shade800, height: 1.35),
+                        ),
+                        const SizedBox(height: 10),
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton(
+                            onPressed: _processingHoldAction ? null : _cancelHolding,
+                            child: _processingHoldAction
+                                ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                                : const Text('Cancel holding order'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                ],
+                _buildLifecycleActionCard(),
+                const SizedBox(height: 12),
+                _buildVehicleControlCard(),
+                if (_canShowVehicleControl) const SizedBox(height: 12),
+                _buildPenaltyCard(),
+                if (_isOvertime || (_overtimePenaltyAmount(effectiveDropoffTime: _dropoffCompletedAt) > 0)) const SizedBox(height: 12),
                 _SectionCard(
                   title: 'Time',
                   trailing: Text(
                     _hoursLeftText(),
                     style: TextStyle(color: _statusColor, fontWeight: FontWeight.w800, fontSize: 12),
                   ),
-                  child: Text(
-                    _timeRangeText(),
-                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _timeRangeText(),
+                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                      if (_pickupCompletedAt != null) ...[
+                        const SizedBox(height: 8),
+                        Text('Pickup completed: ${_fmtDateTime(_pickupCompletedAt!, withSeconds: true)}', style: const TextStyle(fontWeight: FontWeight.w600)),
+                      ],
+                      if (_dropoffCompletedAt != null) ...[
+                        const SizedBox(height: 6),
+                        Text('Drop-off completed: ${_fmtDateTime(_dropoffCompletedAt!, withSeconds: true)}', style: const TextStyle(fontWeight: FontWeight.w600)),
+                      ],
+                    ],
                   ),
                 ),
-
                 const SizedBox(height: 12),
-
-                // Drop off / return
                 _SectionCard(
                   title: 'Nearest Drop Off Location',
                   trailing: Row(
@@ -406,10 +1228,11 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
                     style: TextStyle(color: Colors.grey.shade800, height: 1.3, fontWeight: FontWeight.w600),
                   ),
                 ),
-
-                const SizedBox(height: 14),
-
-                // Car Details (same style as product)
+                const SizedBox(height: 12),
+                _buildEvidenceCard('pickup', 'Pickup Inspection Photos', 'No pickup photo'),
+                if (_hasAnyEvidence('pickup')) const SizedBox(height: 12),
+                _buildEvidenceCard('dropoff', 'Drop-off Inspection Photos', 'No drop-off photo'),
+                if (_hasAnyEvidence('dropoff')) const SizedBox(height: 14),
                 const Text('Car Details', style: TextStyle(fontWeight: FontWeight.w900)),
                 const SizedBox(height: 10),
                 Row(
@@ -463,9 +1286,7 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
                     ),
                   ],
                 ),
-
                 const SizedBox(height: 16),
-
                 SizedBox(
                   width: double.infinity,
                   height: 48,
@@ -568,6 +1389,195 @@ class _DetailTile extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _EvidencePreviewCard extends StatelessWidget {
+  const _EvidencePreviewCard({
+    required this.label,
+    required this.emptyText,
+    this.imageUrl,
+    this.localBytes,
+  });
+
+  final String label;
+  final String emptyText;
+  final String? imageUrl;
+  final Uint8List? localBytes;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasLocal = localBytes != null && localBytes!.isNotEmpty;
+    final hasRemote = (imageUrl ?? '').trim().isNotEmpty;
+    return SizedBox(
+      width: 170,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: const TextStyle(fontWeight: FontWeight.w800)),
+          const SizedBox(height: 6),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: Container(
+              height: 110,
+              color: Colors.grey.shade200,
+              child: hasLocal
+                  ? Image.memory(localBytes!, fit: BoxFit.cover, width: double.infinity)
+                  : hasRemote
+                      ? Image.network(
+                          imageUrl!,
+                          fit: BoxFit.cover,
+                          width: double.infinity,
+                          errorBuilder: (_, __, ___) => Center(
+                            child: Padding(
+                              padding: const EdgeInsets.all(12),
+                              child: Text(emptyText, textAlign: TextAlign.center),
+                            ),
+                          ),
+                        )
+                      : Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: Text(emptyText, textAlign: TextAlign.center),
+                          ),
+                        ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CapturedEvidence {
+  const _CapturedEvidence({
+    required this.bytes,
+    required this.extension,
+  });
+
+  final Uint8List bytes;
+  final String extension;
+}
+
+class _EvidenceCapturePage extends StatefulWidget {
+  const _EvidenceCapturePage({
+    required this.title,
+    required this.subtitle,
+  });
+
+  final String title;
+  final String subtitle;
+
+  @override
+  State<_EvidenceCapturePage> createState() => _EvidenceCapturePageState();
+}
+
+class _EvidenceCapturePageState extends State<_EvidenceCapturePage> {
+  final ImagePicker _picker = ImagePicker();
+  final Map<String, _CapturedEvidence> _files = <String, _CapturedEvidence>{};
+  bool _busy = false;
+
+  Future<void> _take(String side, ImageSource source) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      final x = await _picker.pickImage(
+        source: source,
+        maxWidth: 1800,
+        imageQuality: 85,
+      );
+      if (x == null) return;
+      final bytes = await x.readAsBytes();
+      final name = x.name;
+      final ext = name.contains('.') ? name.split('.').last.toLowerCase() : 'jpg';
+      if (!mounted) return;
+      setState(() {
+        _files[side] = _CapturedEvidence(bytes: bytes, extension: ext);
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to capture $side photo: $e'), backgroundColor: Colors.red),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _busy = false);
+      } else {
+        _busy = false;
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(widget.title)),
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+          children: [
+            Text(widget.subtitle, style: TextStyle(color: Colors.grey.shade700, height: 1.35)),
+            const SizedBox(height: 14),
+            ..._MyOrderDetailsPageState._evidenceSides.map((side) {
+              final file = _files[side];
+              return Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        side[0].toUpperCase() + side.substring(1),
+                        style: const TextStyle(fontWeight: FontWeight.w900),
+                      ),
+                      const SizedBox(height: 10),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: Container(
+                          height: 150,
+                          width: double.infinity,
+                          color: Colors.grey.shade200,
+                          child: file == null
+                              ? const Center(child: Text('Photo not taken yet'))
+                              : Image.memory(file.bytes, fit: BoxFit.cover),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed: _busy ? null : () => _take(side, ImageSource.camera),
+                              icon: const Icon(Icons.camera_alt_outlined),
+                              label: Text(file == null ? 'Camera' : 'Retake'),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed: _busy ? null : () => _take(side, ImageSource.gallery),
+                              icon: const Icon(Icons.photo_library_outlined),
+                              label: const Text('Gallery'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }),
+            const SizedBox(height: 12),
+            FilledButton(
+              onPressed: _files.length == _MyOrderDetailsPageState._evidenceSides.length
+                  ? () => Navigator.of(context).pop(_files)
+                  : null,
+              child: const Text('Use these 4 photos'),
+            ),
+          ],
+        ),
       ),
     );
   }
