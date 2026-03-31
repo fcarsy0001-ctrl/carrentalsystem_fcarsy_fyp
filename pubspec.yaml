@@ -43,6 +43,10 @@ dependencies:
   # HTTP client for API calls
   http: ^1.2.0
 
+  # Firebase AI
+  firebase_core: ^4.1.1
+  firebase_ai: ^3.10.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

@@ -6,6 +6,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/vehicle_onboarding_service.dart';
+import '../services/vehicle_ai_service.dart';
 
 class VehicleRegistrationPage extends StatefulWidget {
   const VehicleRegistrationPage({
@@ -28,6 +29,7 @@ class _VehicleRegistrationPageState extends State<VehicleRegistrationPage> {
   final _picker = ImagePicker();
 
   late final VehicleOnboardingService _service;
+  late final VehicleAiService _vehicleAiService;
 
   final _leaserIdController = TextEditingController();
   final _plateController = TextEditingController();
@@ -41,6 +43,7 @@ class _VehicleRegistrationPageState extends State<VehicleRegistrationPage> {
   final _remarksController = TextEditingController();
 
   bool _saving = false;
+  bool _aiFilling = false;
 
   String _vehicleType = 'Sedan';
   String _transmissionType = 'Auto';
@@ -58,6 +61,9 @@ class _VehicleRegistrationPageState extends State<VehicleRegistrationPage> {
   String? _docsExt;
   String? _docsFileName;
   String? _existingDocsPath;
+  String? _aiNotes;
+  VehicleAiSuggestion? _lastAutoFillSuggestion;
+  String? _lastAutoFillPhotoKey;
 
   bool get _isEdit => widget.initial != null;
 
@@ -79,6 +85,7 @@ class _VehicleRegistrationPageState extends State<VehicleRegistrationPage> {
   void initState() {
     super.initState();
     _service = VehicleOnboardingService(Supabase.instance.client);
+    _vehicleAiService = VehicleAiService();
 
     final fixedLeaserId = (widget.fixedLeaserId ?? '').trim();
     if (fixedLeaserId.isNotEmpty) {
@@ -183,6 +190,9 @@ class _VehicleRegistrationPageState extends State<VehicleRegistrationPage> {
     setState(() {
       _photoBytes = bytes;
       _photoExt = file.name.contains('.') ? file.name.split('.').last.toLowerCase() : 'jpg';
+      _lastAutoFillSuggestion = null;
+      _lastAutoFillPhotoKey = null;
+      _aiNotes = null;
     });
   }
 
@@ -214,6 +224,112 @@ class _VehicleRegistrationPageState extends State<VehicleRegistrationPage> {
           backgroundColor: Colors.red,
         ),
       );
+    }
+  }
+
+  String _photoMimeType() {
+    switch ((_photoExt ?? '').toLowerCase()) {
+      case 'png':
+        return 'image/png';
+      case 'webp':
+        return 'image/webp';
+      default:
+        return 'image/jpeg';
+    }
+  }
+
+  String _buildPhotoKey(Uint8List bytes) {
+    var hash = 17;
+    for (final value in bytes) {
+      hash = 37 * hash + value;
+      hash &= 0x7fffffff;
+    }
+    return '${bytes.length}:$hash';
+  }
+
+  void _applyAiSuggestion(VehicleAiSuggestion result) {
+    if ((result.brand ?? '').trim().isNotEmpty) {
+      _brandController.text = result.brand!.trim();
+    }
+    if ((result.model ?? '').trim().isNotEmpty) {
+      _modelController.text = result.model!.trim();
+    }
+    if (result.year != null && result.year! > 0) {
+      _yearController.text = result.year.toString();
+    }
+    if ((result.vehicleType ?? '').trim().isNotEmpty) {
+      _vehicleType = result.vehicleType!;
+    }
+    if ((result.transmissionType ?? '').trim().isNotEmpty) {
+      _transmissionType = result.transmissionType!;
+    }
+    if ((result.fuelType ?? '').trim().isNotEmpty) {
+      _fuelType = result.fuelType!;
+    }
+    if (result.seatCapacity != null && result.seatCapacity! > 0) {
+      _seatController.text = result.seatCapacity.toString();
+    }
+    _aiNotes = result.notes;
+  }
+
+  Future<void> _runAiAutoFill() async {
+    if (_aiFilling) return;
+
+    if (_photoBytes == null || _photoBytes!.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please upload a vehicle photo first.')),
+      );
+      return;
+    }
+
+    final photoKey = _buildPhotoKey(_photoBytes!);
+
+    if (_lastAutoFillPhotoKey == photoKey && _lastAutoFillSuggestion != null) {
+      setState(() {
+        _applyAiSuggestion(_lastAutoFillSuggestion!);
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Auto fill applied from the same saved photo result.'),
+        ),
+      );
+      return;
+    }
+
+    setState(() => _aiFilling = true);
+
+    try {
+      final result = await _vehicleAiService.detectVehicleFromPhoto(
+        imageBytes: _photoBytes!,
+        mimeType: _photoMimeType(),
+      );
+
+      if (!mounted) return;
+
+      setState(() {
+        _lastAutoFillPhotoKey = photoKey;
+        _lastAutoFillSuggestion = result;
+        _applyAiSuggestion(result);
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Auto fill applied. Please verify before submit.'),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Auto fill failed: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _aiFilling = false);
+      }
     }
   }
 
@@ -560,6 +676,30 @@ class _VehicleRegistrationPageState extends State<VehicleRegistrationPage> {
                           ? 'No photo selected yet'
                           : _existingPhotoPath!,
                     ),
+                    const SizedBox(height: 12),
+                    OutlinedButton.icon(
+                      onPressed: (_saving || _aiFilling || _photoBytes == null) ? null : _runAiAutoFill,
+                      icon: _aiFilling
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.auto_awesome_outlined),
+                      label: Text(_aiFilling ? 'Reading photo...' : 'Auto Fill From Photo'),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Auto fill is based on the uploaded photo. Please check brand, year, seats, transmission and fuel type before submit.',
+                      style: TextStyle(color: cs.onSurfaceVariant),
+                    ),
+                    if ((_aiNotes ?? '').trim().isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        'Auto fill note: $_aiNotes',
+                        style: TextStyle(color: cs.onSurfaceVariant),
+                      ),
+                    ],
                   ],
                 ),
               ),

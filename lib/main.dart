@@ -1,6 +1,9 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
+
+import 'firebase_options.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:app_links/app_links.dart';
 
@@ -24,11 +27,16 @@ SupabaseClient get supabase => Supabase.instance.client;
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  if (Firebase.apps.isEmpty) {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+  }
+
   await Supabase.initialize(
     url: SupabaseConfig.supabaseUrl,
     anonKey: SupabaseConfig.supabaseAnonKey,
   );
-
 
   runApp(const MyApp());
 }
@@ -53,8 +61,11 @@ class _MyAppState extends State<MyApp> {
   void initState() {
     super.initState();
     _listenAuthEvents();
-    _initDeepLinks();
-    _handleWebAuthRedirectIfAny();
+    if (kIsWeb) {
+      _handleWebAuthRedirectIfAny();
+    } else {
+      _initDeepLinks();
+    }
   }
 
   void _listenAuthEvents() {
