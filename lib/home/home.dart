@@ -5,10 +5,12 @@ import '../config/supabase_config.dart';
 import '../profile/profile.dart';
 import '../services/driver_license_service.dart';
 import '../services/promotion_service.dart';
+import '../services/in_app_notification_service.dart';
 import 'product_page.dart';
 import 'vehicle_browse_page.dart';
 import 'nearby_map_page.dart';
 import 'my_orders_page.dart';
+import 'notifications_page.dart';
 
 /// Home screen (car rental) inspired by common car-sharing layouts
 /// (search + featured + car cards). Data is mocked for now.
@@ -31,6 +33,8 @@ class _HomePageState extends State<HomePage> {
 
   bool _hideAnnouncement = false;
   bool _claimingAnnouncementPromo = false;
+
+  InAppNotificationService get _notificationSvc => InAppNotificationService(_supa);
 
   @override
   void initState() {
@@ -212,12 +216,46 @@ class _HomePageState extends State<HomePage> {
           ),
           IconButton(
             tooltip: 'Notifications',
-            onPressed: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Notifications (coming soon)')),
+            onPressed: () async {
+              await Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const NotificationsPage()),
               );
+              if (mounted) setState(() {});
             },
-            icon: const Icon(Icons.notifications_none_rounded),
+            icon: FutureBuilder<int>(
+              future: _notificationSvc.unreadCountForCurrentUser(),
+              builder: (context, snapshot) {
+                final unread = snapshot.data ?? 0;
+                return Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    const Icon(Icons.notifications_none_rounded),
+                    if (unread > 0)
+                      Positioned(
+                        right: -2,
+                        top: -2,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: Colors.red,
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
+                          child: Text(
+                            unread > 9 ? '9+' : unread.toString(),
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                );
+              },
+            ),
           ),
           Padding(
             padding: const EdgeInsets.only(right: 12),

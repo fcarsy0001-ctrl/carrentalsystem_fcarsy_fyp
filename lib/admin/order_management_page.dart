@@ -2,6 +2,8 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../services/in_app_notification_service.dart';
+
 class OrderManagementPage extends StatefulWidget {
   const OrderManagementPage({super.key});
 
@@ -20,6 +22,7 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
 
   List<Map<String, dynamic>> _rows = const [];
   Map<String, Map<String, dynamic>> _usersById = const {};
+  Map<String, Set<String>> _evidenceStagesByBooking = const {};
 
   @override
   void initState() {
@@ -52,6 +55,23 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
           .select('user_id,user_email,user_name')
           .limit(5000);
 
+      var evidenceStagesByBooking = <String, Set<String>>{};
+      try {
+        final evidenceRows = await _supa
+            .from('booking_evidence')
+            .select('booking_id,stage')
+            .limit(10000);
+        for (final row in (evidenceRows as List)) {
+          final map = Map<String, dynamic>.from(row as Map);
+          final bookingId = (map['booking_id'] ?? '').toString().trim();
+          final stage = (map['stage'] ?? '').toString().trim().toLowerCase();
+          if (bookingId.isEmpty || stage.isEmpty) continue;
+          evidenceStagesByBooking.putIfAbsent(bookingId, () => <String>{}).add(stage);
+        }
+      } catch (_) {
+        evidenceStagesByBooking = <String, Set<String>>{};
+      }
+
       final list = (bookingRows as List)
           .map((e) => Map<String, dynamic>.from(e as Map))
           .toList();
@@ -65,6 +85,7 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
       setState(() {
         _rows = list;
         _usersById = users;
+        _evidenceStagesByBooking = evidenceStagesByBooking;
       });
     } catch (e) {
       setState(() => _error = e.toString());
@@ -81,8 +102,11 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
     final map = <String, List<Map<String, dynamic>>>{};
 
     for (final r in _rows) {
+      if (!_shouldAppearInAdminList(r)) {
+        continue;
+      }
       final st = (r['booking_status'] ?? '').toString().trim();
-      if (_statusFilter != 'All' && _normStatus(st) != _normStatus(_statusFilter)) {
+      if (_statusFilter != 'All' && _effectiveStatusKey(r) != _normStatus(_statusFilter)) {
         continue;
       }
 
@@ -155,6 +179,87 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
     if (s == 'active') return Colors.green;
     if (s == 'inactive') return Colors.grey;
     return Colors.blueGrey;
+  }
+
+  DateTime? _dt(dynamic value) {
+    if (value == null) return null;
+    if (value is DateTime) return value.isUtc ? value.toLocal() : value;
+    try {
+      final parsed = DateTime.parse(value.toString());
+      return parsed.isUtc ? parsed.toLocal() : parsed;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  bool _hasDropoffCompleted(Map<String, dynamic> row) {
+    final s = _normStatus((row['booking_status'] ?? '').toString());
+    if (s == 'inactive') return true;
+    return _dt(row['dropoff_completed_at']) != null || _dt(row['actual_dropoff_at']) != null;
+  }
+
+  bool _isIncomingOrder(Map<String, dynamic> row) {
+    final start = _dt(row['rental_start']);
+    final end = _dt(row['rental_end']);
+    if (start == null || end == null) return false;
+    if (_hasDropoffCompleted(row)) return false;
+    final s = _normStatus((row['booking_status'] ?? '').toString());
+    if (s == 'cancelled' || s == 'deactive' || s == 'inactive' || s == 'holding') return false;
+    return DateTime.now().isBefore(start);
+  }
+
+  bool _shouldAppearInAdminList(Map<String, dynamic> row) {
+    return true;
+  }
+
+  bool _isPhotoEligibleOrder(Map<String, dynamic> row) {
+    final s = _normStatus((row['booking_status'] ?? '').toString());
+    if (s == 'cancelled') return false;
+    if (_isIncomingOrder(row)) return false;
+    return true;
+  }
+
+  String _effectiveStatusKey(Map<String, dynamic> row) {
+    if (_isIncomingOrder(row)) return 'incoming';
+    return _normStatus((row['booking_status'] ?? '').toString());
+  }
+
+  String _effectiveStatusLabel(Map<String, dynamic> row) {
+    final key = _effectiveStatusKey(row);
+    if (key == 'incoming') return 'Incoming';
+    return _statusLabel((row['booking_status'] ?? '').toString());
+  }
+
+  Color _effectiveStatusColor(Map<String, dynamic> row) {
+    final key = _effectiveStatusKey(row);
+    if (key == 'incoming') return Colors.blue;
+    return _statusColor((row['booking_status'] ?? '').toString());
+  }
+
+  bool _hasEvidenceInRow(Map<String, dynamic> row, String stage) {
+    if (!_isPhotoEligibleOrder(row)) return false;
+    for (final side in const ['front', 'left', 'right', 'back']) {
+      final url = (row['${stage}_${side}_url'] ?? '').toString().trim();
+      final path = (row['${stage}_${side}_path'] ?? '').toString().trim();
+      if (url.isNotEmpty || path.isNotEmpty) return true;
+    }
+    final bookingId = (row['booking_id'] ?? '').toString().trim();
+    return (_evidenceStagesByBooking[bookingId] ?? const <String>{}).contains(stage);
+  }
+
+  Widget _evidenceChip({required String text, required Color color}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withOpacity(0.25)),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(color: color, fontWeight: FontWeight.w700, fontSize: 11),
+      ),
+    );
   }
 
   Future<void> _setStatus({
@@ -338,29 +443,60 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
-            child: Row(
+            child: Column(
               children: [
-                Expanded(
-                  child: TextField(
-                    controller: _q,
-                    decoration: const InputDecoration(
-                      prefixIcon: Icon(Icons.search),
-                      hintText: 'Search user id / email / booking / vehicle',
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _q,
+                        decoration: const InputDecoration(
+                          prefixIcon: Icon(Icons.search),
+                          hintText: 'Search user id / email / booking / vehicle',
+                        ),
+                      ),
                     ),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                DropdownButton<String>(
-                  value: _statusFilter,
-                  items: const [
-                    DropdownMenuItem(value: 'All', child: Text('All')),
-                    DropdownMenuItem(value: 'Paid', child: Text('Paid')),
-                    DropdownMenuItem(value: 'Active', child: Text('Active')),
-                    DropdownMenuItem(value: 'Inactive', child: Text('Inactive')),
-                    DropdownMenuItem(value: 'Deactive', child: Text('Deactive')),
-                    DropdownMenuItem(value: 'Cancelled', child: Text('Cancelled')),
+                    const SizedBox(width: 10),
+                    DropdownButton<String>(
+                      value: _statusFilter,
+                      items: const [
+                        DropdownMenuItem(value: 'All', child: Text('All')),
+                        DropdownMenuItem(value: 'Incoming', child: Text('Incoming')),
+                        DropdownMenuItem(value: 'Paid', child: Text('Paid')),
+                        DropdownMenuItem(value: 'Active', child: Text('Active')),
+                        DropdownMenuItem(value: 'Inactive', child: Text('Inactive')),
+                        DropdownMenuItem(value: 'Deactive', child: Text('Deactive')),
+                        DropdownMenuItem(value: 'Holding', child: Text('Holding')),
+                        DropdownMenuItem(value: 'Cancelled', child: Text('Cancelled')),
+                      ],
+                      onChanged: (v) => setState(() => _statusFilter = v ?? 'All'),
+                    ),
                   ],
-                  onChanged: (v) => setState(() => _statusFilter = v ?? 'All'),
+                ),
+                const SizedBox(height: 10),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final option in const [
+                        'All',
+                        'Incoming',
+                        'Paid',
+                        'Active',
+                        'Inactive',
+                        'Deactive',
+                        'Holding',
+                        'Cancelled',
+                      ])
+                        FilterChip(
+                          label: Text(option),
+                          selected: _statusFilter == option,
+                          onSelected: (_) => setState(() => _statusFilter = option),
+                        ),
+                    ],
+                  ),
                 ),
               ],
             ),
@@ -393,6 +529,9 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
                                 children: group.orders.map((r) {
                                   final id = (r['booking_id'] ?? '').toString();
                                   final st = (r['booking_status'] ?? '').toString();
+                                  final statusLabel = _effectiveStatusLabel(r);
+                                  final statusColor = _effectiveStatusColor(r);
+                                  final isPhotoEligible = _isPhotoEligibleOrder(r);
                                   final amt = _money(r['total_rental_amount']);
                                   final vid = (r['vehicle_id'] ?? '').toString();
                                   final bookingDate = (r['booking_date'] ?? '').toString();
@@ -405,20 +544,48 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
                                     child: ListTile(
                                       onTap: () => _openDetail(r),
                                       title: Text(id, style: const TextStyle(fontWeight: FontWeight.w800)),
-                                      subtitle: Text('Vehicle: $vid\nAmount: $amt\nDate: $bookingDate'),
+                                      subtitle: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Text('Vehicle: $vid\nAmount: $amt\nDate: $bookingDate'),
+                                          if (isPhotoEligible && (_hasEvidenceInRow(r, 'pickup') || _hasEvidenceInRow(r, 'dropoff'))) ...[
+                                            const SizedBox(height: 8),
+                                            Wrap(
+                                              spacing: 6,
+                                              runSpacing: 6,
+                                              children: [
+                                                if (_hasEvidenceInRow(r, 'pickup'))
+                                                  _evidenceChip(text: 'Pickup photos', color: Colors.indigo),
+                                                if (_hasEvidenceInRow(r, 'dropoff'))
+                                                  _evidenceChip(text: 'Drop-off photos', color: Colors.deepOrange),
+                                              ],
+                                            ),
+                                          ] else if (!isPhotoEligible) ...[
+                                            const SizedBox(height: 8),
+                                            Text(
+                                              'Pickup / drop-off photos not available for $statusLabel orders.',
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                color: Colors.grey.shade700,
+                                                fontStyle: FontStyle.italic,
+                                              ),
+                                            ),
+                                          ],
+                                        ],
+                                      ),
                                       trailing: Row(
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
                                           Container(
                                             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                                             decoration: BoxDecoration(
-                                              color: _statusColor(st).withOpacity(0.12),
+                                              color: statusColor.withOpacity(0.12),
                                               borderRadius: BorderRadius.circular(999),
                                             ),
                                             child: Text(
-                                              _statusLabel(st),
+                                              statusLabel,
                                               style: TextStyle(
-                                                color: _statusColor(st),
+                                                color: statusColor,
                                                 fontWeight: FontWeight.w800,
                                               ),
                                             ),
@@ -502,10 +669,16 @@ class _OrderDetailAdminPageState extends State<_OrderDetailAdminPage> {
   SupabaseClient get _supa => Supabase.instance.client;
 
   static const _evidenceSides = <String>['front', 'left', 'right', 'back'];
+  static const _evidenceBucket = 'booking_evidence';
 
   bool _loading = true;
   String? _error;
   Map<String, dynamic>? _detail;
+  final Map<String, String> _resolvedEvidenceUrls = <String, String>{};
+  bool _loadingExtraCharges = false;
+  bool _extraChargeTableReady = true;
+  bool _sendingReminder = false;
+  List<Map<String, dynamic>> _extraCharges = const [];
 
   @override
   void initState() {
@@ -579,16 +752,413 @@ class _OrderDetailAdminPageState extends State<_OrderDetailAdminPage> {
     return hours * _baseHourlyRate() * 2;
   }
 
+  String _chargeStatusLabel(dynamic value) {
+    final raw = (value ?? '').toString().trim().toLowerCase();
+    if (raw == 'paid') return 'Paid';
+    if (raw == 'waived') return 'Waived';
+    if (raw == 'cancelled') return 'Cancelled';
+    return 'Pending';
+  }
+
+  Color _chargeStatusColor(BuildContext context, dynamic value) {
+    final raw = (value ?? '').toString().trim().toLowerCase();
+    if (raw == 'paid') return Colors.green;
+    if (raw == 'waived') return Colors.blueGrey;
+    if (raw == 'cancelled') return Colors.red;
+    return Theme.of(context).colorScheme.primary;
+  }
+
+  String _chargePaymentMethodLabel(dynamic value) {
+    final raw = (value ?? '').toString().trim().toLowerCase();
+    if (raw == 'card') return 'Card';
+    if (raw == 'tng' || raw == 'touch n go' || raw == "touch 'n go" || raw == 'touchngo') return 'TNG';
+    if (raw == 'stripe') return 'Stripe';
+    return (value ?? '').toString().trim().isEmpty ? '-' : (value ?? '').toString().trim();
+  }
+
+  List<Map<String, dynamic>> get _pendingExtraCharges {
+    return _extraCharges
+        .where((row) => _chargeStatusLabel(row['charge_status']) == 'Pending')
+        .toList(growable: false);
+  }
+
+  double get _pendingExtraChargeTotal {
+    var total = 0.0;
+    for (final row in _pendingExtraCharges) {
+      total += _moneyValue(row['amount']);
+    }
+    return total;
+  }
+
+  bool get _hideEvidenceForThisOrder {
+    final detail = _detail ?? widget.row;
+    final raw = (detail['booking_status'] ?? '').toString().trim().toLowerCase();
+    if (raw == 'cancel' || raw == 'cancelled' || raw == 'canceled') return true;
+    final start = _dt(detail['rental_start']);
+    final end = _dt(detail['rental_end']);
+    final hasDropoffCompleted = _dt(detail['dropoff_completed_at']) != null || _dt(detail['actual_dropoff_at']) != null;
+    final statusBlocksIncoming = raw == 'cancel' || raw == 'cancelled' || raw == 'canceled' || raw == 'deactive' || raw == 'inactive' || raw == 'holding';
+    if (!statusBlocksIncoming && start != null && end != null && !hasDropoffCompleted && DateTime.now().isBefore(start)) {
+      return true;
+    }
+    return false;
+  }
+
+  String get _hiddenEvidenceReason {
+    final detail = _detail ?? widget.row;
+    final raw = (detail['booking_status'] ?? '').toString().trim().toLowerCase();
+    if (raw == 'cancel' || raw == 'cancelled' || raw == 'canceled') {
+      return 'Cancelled orders do not show pickup / drop-off inspection photos.';
+    }
+    return 'Incoming orders do not show pickup / drop-off inspection photos yet.';
+  }
+
+  Future<void> _refreshExtraCharges() async {
+    final bookingId = (widget.row['booking_id'] ?? '').toString().trim();
+    if (bookingId.isEmpty) return;
+    if (mounted) {
+      setState(() => _loadingExtraCharges = true);
+    }
+    try {
+      final rows = await _supa
+          .from('booking_extra_charge')
+          .select('*')
+          .eq('booking_id', bookingId)
+          .order('created_at', ascending: false);
+      final list = (rows as List)
+          .map((e) => Map<String, dynamic>.from(e as Map))
+          .toList();
+      if (!mounted) return;
+      setState(() {
+        _extraCharges = list;
+        _extraChargeTableReady = true;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _extraCharges = const [];
+        _extraChargeTableReady = false;
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _loadingExtraCharges = false);
+      }
+    }
+  }
+
+  Future<void> _sendPendingChargeReminder() async {
+    final detail = _detail;
+    if (detail == null || _pendingExtraCharges.isEmpty) return;
+    final userId = (detail['user_id'] ?? '').toString().trim();
+    final bookingId = (detail['booking_id'] ?? '').toString().trim();
+    if (userId.isEmpty || bookingId.isEmpty) return;
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Reminder unpaid bill'),
+        content: Text(
+          'Send reminder to user for ${_pendingExtraCharges.length} unpaid bill(s)?\n\nTotal due: ${_money(_pendingExtraChargeTotal)}',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Back')),
+          FilledButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Send reminder')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    setState(() => _sendingReminder = true);
+    try {
+      final firstCharge = _pendingExtraCharges.first;
+      await InAppNotificationService(_supa).createNotification(
+        userId: userId,
+        bookingId: bookingId,
+        extraChargeId: (firstCharge['charge_id'] ?? '').toString().trim(),
+        type: 'extra_charge_reminder',
+        title: 'Unpaid damage / extra bill reminder',
+        message:
+            'You still have ${_pendingExtraCharges.length} unpaid extra bill(s) for booking $bookingId. Total due: ${_money(_pendingExtraChargeTotal)}. Please open My Orders and pay the bill.',
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Reminder sent to user.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to send reminder: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _sendingReminder = false);
+    }
+  }
+
+  Widget _buildExtraChargeSection() {
+    if (_loadingExtraCharges) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 8),
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
+    if (!_extraChargeTableReady || _extraCharges.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Divider(height: 26),
+        Row(
+          children: [
+            const Expanded(
+              child: Text('Extra Bills & Damage Charges', style: TextStyle(fontWeight: FontWeight.w900)),
+            ),
+            if (_pendingExtraCharges.isNotEmpty)
+              FilledButton.tonalIcon(
+                onPressed: _sendingReminder ? null : _sendPendingChargeReminder,
+                icon: _sendingReminder
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.notifications_active_outlined),
+                label: const Text('Remind user'),
+              ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        ..._extraCharges.map((row) {
+          final status = _chargeStatusLabel(row['charge_status']);
+          final color = _chargeStatusColor(context, row['charge_status']);
+          final type = (row['charge_type'] ?? 'Other').toString();
+          final note = (row['remark'] ?? row['notes'] ?? '').toString().trim();
+          final amount = _money(row['amount']);
+          final paymentMethod = _chargePaymentMethodLabel(
+            row['payment_method'] ?? row['charge_payment_method'],
+          );
+          final paymentReference = ((row['payment_reference'] ?? row['charge_payment_reference']) ?? '')
+              .toString()
+              .trim();
+          return Container(
+            width: double.infinity,
+            margin: const EdgeInsets.only(bottom: 10),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: color.withOpacity(0.25)),
+              color: color.withOpacity(0.06),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        type.isEmpty ? 'Other' : type[0].toUpperCase() + type.substring(1),
+                        style: const TextStyle(fontWeight: FontWeight.w800),
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: color.withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(color: color.withOpacity(0.35)),
+                      ),
+                      child: Text(
+                        status,
+                        style: TextStyle(color: color, fontWeight: FontWeight.w800, fontSize: 12),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text('Amount: $amount', style: const TextStyle(fontWeight: FontWeight.w700)),
+                if (note.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text(note, style: TextStyle(color: Colors.grey.shade800, height: 1.3)),
+                ],
+                if (status == 'Paid' && paymentMethod != '-') ...[
+                  const SizedBox(height: 6),
+                  Text('Payment method: $paymentMethod', style: TextStyle(color: Colors.grey.shade800, fontWeight: FontWeight.w600)),
+                ],
+                if (status == 'Paid' && paymentReference.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text('Reference: $paymentReference', style: TextStyle(color: Colors.grey.shade700, fontSize: 12)),
+                ],
+              ],
+            ),
+          );
+        }),
+      ],
+    );
+  }
+
+  String _evidenceKey(String stage, String side) => '$stage:$side';
+
+  String _evidencePublicUrl(String path) {
+    final safe = path.replaceFirst(RegExp(r'^/+'), '');
+    return _supa.storage.from(_evidenceBucket).getPublicUrl(safe);
+  }
+
+  Future<String?> _signedOrPublicEvidenceUrl(String path) async {
+    final trimmed = path.trim();
+    if (trimmed.isEmpty) return null;
+    final safe = trimmed.replaceFirst(RegExp(r'^/+'), '');
+    try {
+      return await _supa.storage.from(_evidenceBucket).createSignedUrl(safe, 60 * 60 * 24);
+    } catch (_) {
+      try {
+        return _evidencePublicUrl(safe);
+      } catch (_) {
+        return null;
+      }
+    }
+  }
+
+  Future<void> _resolveEvidenceUrls() async {
+    final detail = _detail;
+    if (detail == null) return;
+    final bookingId = (detail['booking_id'] ?? '').toString().trim();
+    final resolved = <String, String>{};
+
+    for (final stage in const ['pickup', 'dropoff']) {
+      for (final side in _evidenceSides) {
+        final directUrl = (detail['${stage}_${side}_url'] ?? '').toString().trim();
+        if (directUrl.isNotEmpty) {
+          resolved[_evidenceKey(stage, side)] = directUrl;
+          continue;
+        }
+        final storagePath = (detail['${stage}_${side}_path'] ?? '').toString().trim();
+        if (storagePath.isNotEmpty) {
+          final signed = await _signedOrPublicEvidenceUrl(storagePath);
+          if ((signed ?? '').isNotEmpty) {
+            resolved[_evidenceKey(stage, side)] = signed!;
+          }
+        }
+      }
+    }
+
+    if (bookingId.isNotEmpty) {
+      try {
+        final rows = await _supa
+            .from('booking_evidence')
+            .select('stage,side,image_url,storage_path')
+            .eq('booking_id', bookingId);
+        for (final row in (rows as List)) {
+          final map = Map<String, dynamic>.from(row as Map);
+          final stage = (map['stage'] ?? '').toString().trim();
+          final side = (map['side'] ?? '').toString().trim();
+          if (stage.isEmpty || side.isEmpty) continue;
+          final key = _evidenceKey(stage, side);
+          if ((resolved[key] ?? '').isNotEmpty) continue;
+          final imageUrl = (map['image_url'] ?? '').toString().trim();
+          if (imageUrl.isNotEmpty) {
+            resolved[key] = imageUrl;
+            continue;
+          }
+          final storagePath = (map['storage_path'] ?? '').toString().trim();
+          if (storagePath.isNotEmpty) {
+            final signed = await _signedOrPublicEvidenceUrl(storagePath);
+            if ((signed ?? '').isNotEmpty) {
+              resolved[key] = signed!;
+            }
+          }
+        }
+      } catch (_) {
+        // Optional helper table. Ignore when not available.
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _resolvedEvidenceUrls
+        ..clear()
+        ..addAll(resolved);
+    });
+  }
+
   String? _evidenceUrl(String stage, String side) {
+    final resolved = (_resolvedEvidenceUrls[_evidenceKey(stage, side)] ?? '').trim();
+    if (resolved.isNotEmpty) return resolved;
     final raw = (_detail?['${stage}_${side}_url'] ?? '').toString().trim();
-    return raw.isEmpty ? null : raw;
+    if (raw.isNotEmpty) return raw;
+    final path = (_detail?['${stage}_${side}_path'] ?? '').toString().trim();
+    if (path.isNotEmpty) return _evidencePublicUrl(path);
+    return null;
   }
 
   bool _hasEvidence(String stage) {
     for (final side in _evidenceSides) {
-      if ((_evidenceUrl(stage, side) ?? '').isNotEmpty) return true;
+      final directUrl = (_detail?['${stage}_${side}_url'] ?? '').toString().trim();
+      final path = (_detail?['${stage}_${side}_path'] ?? '').toString().trim();
+      final resolved = (_resolvedEvidenceUrls[_evidenceKey(stage, side)] ?? '').trim();
+      if (directUrl.isNotEmpty || path.isNotEmpty || resolved.isNotEmpty) return true;
     }
     return false;
+  }
+
+  int _evidenceFoundCount(String stage) {
+    var count = 0;
+    for (final side in _evidenceSides) {
+      if (((_evidenceUrl(stage, side) ?? '').trim()).isNotEmpty) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  Widget _buildEvidenceSection({
+    required String stage,
+    required String title,
+    required String description,
+  }) {
+    final count = _evidenceFoundCount(stage);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Divider(height: 26),
+        Row(
+          children: [
+            Expanded(child: Text(title, style: const TextStyle(fontWeight: FontWeight.w900))),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(999),
+                color: count > 0 ? Colors.green.withOpacity(0.08) : Colors.grey.withOpacity(0.12),
+                border: Border.all(
+                  color: count > 0 ? Colors.green.withOpacity(0.25) : Colors.grey.withOpacity(0.25),
+                ),
+              ),
+              child: Text(
+                '$count/4 found',
+                style: TextStyle(
+                  fontWeight: FontWeight.w800,
+                  fontSize: 12,
+                  color: count > 0 ? Colors.green.shade700 : Colors.grey.shade700,
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        Text(description, style: TextStyle(color: Colors.grey.shade700)),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: _evidenceSides
+              .map((side) => _AdminEvidenceCard(
+                    label: side[0].toUpperCase() + side.substring(1),
+                    imageUrl: _evidenceUrl(stage, side),
+                  ))
+              .toList(),
+        ),
+      ],
+    );
   }
 
   Future<void> _load() async {
@@ -596,6 +1166,9 @@ class _OrderDetailAdminPageState extends State<_OrderDetailAdminPage> {
       _loading = true;
       _error = null;
       _detail = null;
+      _resolvedEvidenceUrls.clear();
+      _extraCharges = const [];
+      _extraChargeTableReady = true;
     });
 
     final bookingId = (widget.row['booking_id'] ?? '').toString().trim();
@@ -609,6 +1182,8 @@ class _OrderDetailAdminPageState extends State<_OrderDetailAdminPage> {
           .maybeSingle();
 
       setState(() => _detail = r == null ? null : Map<String, dynamic>.from(r));
+      await _resolveEvidenceUrls();
+      await _refreshExtraCharges();
     } catch (e) {
       setState(() => _error = e.toString());
     } finally {
@@ -672,44 +1247,37 @@ class _OrderDetailAdminPageState extends State<_OrderDetailAdminPage> {
                         _KV('Plate', (((_detail!['vehicle'] ?? const {}) as Map)['vehicle_plate_no'] ?? '-').toString()),
                         _KV('Leaser ID', (((_detail!['vehicle'] ?? const {}) as Map)['leaser_id'] ?? '-').toString()),
                         _KV('Location', (((_detail!['vehicle'] ?? const {}) as Map)['vehicle_location'] ?? '-').toString()),
-                        if (_hasEvidence('pickup')) ...[
-                          const Divider(height: 26),
-                          const Text('Pickup Inspection Photos', style: TextStyle(fontWeight: FontWeight.w900)),
-                          const SizedBox(height: 10),
-                          Text(
-                            'Review the 4 pickup photos captured before the trip was officially ongoing.',
-                            style: TextStyle(color: Colors.grey.shade700),
+                        _buildExtraChargeSection(),
+                        if (_hideEvidenceForThisOrder)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 8),
+                            child: Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(12),
+                                color: Colors.grey.shade100,
+                                border: Border.all(color: Colors.grey.shade300),
+                              ),
+                              child: Text(
+                                _hiddenEvidenceReason,
+                                style: TextStyle(
+                                  color: Colors.grey.shade800,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          )
+                        else ...[
+                          _buildEvidenceSection(
+                            stage: 'pickup',
+                            title: 'Pickup Inspection Photos',
+                            description: 'Review the 4 pickup photos captured before the trip was officially ongoing.',
                           ),
-                          const SizedBox(height: 10),
-                          Wrap(
-                            spacing: 10,
-                            runSpacing: 10,
-                            children: _evidenceSides
-                                .map((side) => _AdminEvidenceCard(
-                                      label: side[0].toUpperCase() + side.substring(1),
-                                      imageUrl: _evidenceUrl('pickup', side),
-                                    ))
-                                .toList(),
-                          ),
-                        ],
-                        if (_hasEvidence('dropoff')) ...[
-                          const Divider(height: 26),
-                          const Text('Drop-off Inspection Photos', style: TextStyle(fontWeight: FontWeight.w900)),
-                          const SizedBox(height: 10),
-                          Text(
-                            'Staff/Admin should compare these against the pickup photos to check for damage.',
-                            style: TextStyle(color: Colors.grey.shade700),
-                          ),
-                          const SizedBox(height: 10),
-                          Wrap(
-                            spacing: 10,
-                            runSpacing: 10,
-                            children: _evidenceSides
-                                .map((side) => _AdminEvidenceCard(
-                                      label: side[0].toUpperCase() + side.substring(1),
-                                      imageUrl: _evidenceUrl('dropoff', side),
-                                    ))
-                                .toList(),
+                          _buildEvidenceSection(
+                            stage: 'dropoff',
+                            title: 'Drop-off Inspection Photos',
+                            description: 'Staff/Admin should compare these against the pickup photos to check for damage.',
                           ),
                         ],
                       ],

@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+
 // Country codes for phone number selection
 class CountryCode {
   final String name;
@@ -11,6 +13,8 @@ class CountryCode {
     required this.dialCode,
     required this.flag,
   });
+
+  String get safeFlagLabel => kIsWeb ? code : flag;
 }
 
 class CountryCodes {

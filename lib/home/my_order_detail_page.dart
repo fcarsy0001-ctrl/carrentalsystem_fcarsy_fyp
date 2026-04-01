@@ -44,6 +44,9 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
   bool _processingLifecycleAction = false;
   final Map<String, Uint8List> _pickupLocalPhotos = <String, Uint8List>{};
   final Map<String, Uint8List> _dropoffLocalPhotos = <String, Uint8List>{};
+  bool _loadingExtraCharges = false;
+  bool _extraChargeTableReady = true;
+  List<Map<String, dynamic>> _extraCharges = const [];
 
   @override
   void initState() {
@@ -58,6 +61,7 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
     _refreshBookingMeta();
     _startRealtimeBookingWatch();
     _restartTickerIfNeeded();
+    _refreshExtraCharges();
   }
 
   @override
@@ -80,6 +84,452 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
     final model = (_v['vehicle_model'] ?? '').toString().trim();
     final t = ('$brand $model').trim();
     return t.isEmpty ? (_b['vehicle_id'] ?? '').toString() : t;
+  }
+
+  String _evidencePublicUrl(String? path) {
+    if (path == null || path.trim().isEmpty) return '';
+    final safe = path.replaceFirst(RegExp(r'^/+'), '');
+    return _supa.storage.from(_evidenceBucket).getPublicUrl(safe);
+  }
+
+  Future<void> _refreshExtraCharges() async {
+    final bookingId = (_b['booking_id'] ?? '').toString().trim();
+    if (bookingId.isEmpty) return;
+    if (mounted) {
+      setState(() {
+        _loadingExtraCharges = true;
+      });
+    }
+    try {
+      final rows = await _supa
+          .from('booking_extra_charge')
+          .select('*')
+          .eq('booking_id', bookingId)
+          .order('created_at', ascending: false);
+      final list = (rows as List)
+          .map((e) => Map<String, dynamic>.from(e as Map))
+          .toList();
+      if (!mounted) return;
+      setState(() {
+        _extraCharges = list;
+        _extraChargeTableReady = true;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _extraCharges = const [];
+        _extraChargeTableReady = false;
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loadingExtraCharges = false;
+        });
+      }
+    }
+  }
+
+  String _chargeStatusLabel(dynamic value) {
+    final raw = (value ?? '').toString().trim().toLowerCase();
+    if (raw == 'paid') return 'Paid';
+    if (raw == 'waived') return 'Waived';
+    if (raw == 'cancelled') return 'Cancelled';
+    return 'Pending';
+  }
+
+  Color _chargeStatusColor(BuildContext context, dynamic value) {
+    final raw = (value ?? '').toString().trim().toLowerCase();
+    if (raw == 'paid') return Colors.green;
+    if (raw == 'waived') return Colors.blueGrey;
+    if (raw == 'cancelled') return Colors.red;
+    return Theme.of(context).colorScheme.primary;
+  }
+
+  String _normalizeChargePaymentMethod(dynamic value) {
+    final raw = (value ?? '').toString().trim().toLowerCase();
+    if (raw == 'card') return 'card';
+    if (raw == 'tng' || raw == 'touch n go' || raw == "touch 'n go" || raw == 'touchngo') return 'tng';
+    if (raw == 'stripe') return 'stripe';
+    return raw;
+  }
+
+  String _chargePaymentMethodLabel(dynamic value) {
+    switch (_normalizeChargePaymentMethod(value)) {
+      case 'card':
+        return 'Card';
+      case 'tng':
+        return 'TNG';
+      case 'stripe':
+        return 'Stripe';
+      default:
+        final raw = (value ?? '').toString().trim();
+        return raw.isEmpty ? '-' : raw;
+    }
+  }
+
+  String _buildExtraChargeReference({
+    required String method,
+    String? cardNumber,
+    String? tngReference,
+  }) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final digits = (cardNumber ?? '').replaceAll(RegExp(r'[^0-9]'), '');
+    final tngDigits = (tngReference ?? '').replaceAll(RegExp(r'[^0-9]'), '');
+    switch (method) {
+      case 'card':
+        final last4 = digits.length >= 4 ? digits.substring(digits.length - 4) : '0000';
+        return 'CD$last4${(now % 10000).toString().padLeft(4, '0')}';
+      case 'tng':
+        final tail = tngDigits.isEmpty
+            ? (now % 10000000).toString().padLeft(7, '0')
+            : tngDigits.substring(math.max(0, tngDigits.length - 7));
+        return 'TNG$tail';
+      default:
+        return 'STP${(now % 10000000).toString().padLeft(7, '0')}';
+    }
+  }
+
+  Future<Map<String, String>?> _promptExtraChargePayment(Map<String, dynamic> charge) async {
+    final cardNameCtrl = TextEditingController();
+    final cardNoCtrl = TextEditingController();
+    final cardExpCtrl = TextEditingController();
+    final cardCvvCtrl = TextEditingController();
+    final tngRefCtrl = TextEditingController();
+    var method = 'card';
+
+    final result = await showDialog<Map<String, String>>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setLocalState) {
+            Widget buildMethodFields() {
+              if (method == 'card') {
+                return Column(
+                  children: [
+                    TextField(
+                      controller: cardNameCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Cardholder Name',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: cardNoCtrl,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: 'Card Number (demo)',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: cardExpCtrl,
+                            keyboardType: TextInputType.datetime,
+                            decoration: const InputDecoration(
+                              labelText: 'Expiry (MM/YY)',
+                              border: OutlineInputBorder(),
+                              isDense: true,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: TextField(
+                            controller: cardCvvCtrl,
+                            keyboardType: TextInputType.number,
+                            obscureText: true,
+                            decoration: const InputDecoration(
+                              labelText: 'CVV',
+                              border: OutlineInputBorder(),
+                              isDense: true,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                );
+              }
+              if (method == 'tng') {
+                return TextField(
+                  controller: tngRefCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'TNG Reference / Phone',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                );
+              }
+              return Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  color: Colors.grey.shade100,
+                  border: Border.all(color: Colors.grey.shade300),
+                ),
+                child: Text(
+                  'Stripe demo payment will be saved immediately when you tap Pay now.',
+                  style: TextStyle(color: Colors.grey.shade800),
+                ),
+              );
+            }
+
+            return AlertDialog(
+              title: const Text('Pay extra bill'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Amount: ${_money(charge['amount'])}',
+                      style: const TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: FilledButton(
+                            onPressed: method == 'card' ? null : () => setLocalState(() => method = 'card'),
+                            child: const Text('Card'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: FilledButton(
+                            onPressed: method == 'tng' ? null : () => setLocalState(() => method = 'tng'),
+                            child: const Text('TNG'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: FilledButton(
+                            onPressed: method == 'stripe' ? null : () => setLocalState(() => method = 'stripe'),
+                            child: const Text('Stripe'),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    buildMethodFields(),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    String reference;
+                    try {
+                      if (method == 'card') {
+                        final name = cardNameCtrl.text.trim();
+                        final digits = cardNoCtrl.text.replaceAll(RegExp(r'[^0-9]'), '');
+                        final exp = cardExpCtrl.text.trim();
+                        final cvv = cardCvvCtrl.text.replaceAll(RegExp(r'[^0-9]'), '');
+                        if (name.isEmpty) throw 'Please enter cardholder name.';
+                        if (digits.length < 12) throw 'Please enter a valid card number.';
+                        if (!RegExp(r'^\d{2}/\d{2}$').hasMatch(exp)) {
+                          throw 'Expiry must be MM/YY.';
+                        }
+                        if (cvv.length < 3 || cvv.length > 4) throw 'CVV must be 3-4 digits.';
+                        reference = _buildExtraChargeReference(method: method, cardNumber: digits);
+                      } else if (method == 'tng') {
+                        final tng = tngRefCtrl.text.trim();
+                        if (tng.isEmpty) throw 'Please enter TNG reference / phone.';
+                        reference = _buildExtraChargeReference(method: method, tngReference: tng);
+                      } else {
+                        reference = _buildExtraChargeReference(method: method);
+                      }
+                    } catch (e) {
+                      ScaffoldMessenger.of(dialogContext).showSnackBar(
+                        SnackBar(content: Text(e.toString())),
+                      );
+                      return;
+                    }
+
+                    Navigator.of(dialogContext).pop({
+                      'method': method,
+                      'reference': reference,
+                    });
+                  },
+                  child: const Text('Pay now'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    cardNameCtrl.dispose();
+    cardNoCtrl.dispose();
+    cardExpCtrl.dispose();
+    cardCvvCtrl.dispose();
+    tngRefCtrl.dispose();
+    return result;
+  }
+
+  Future<void> _payExtraCharge(Map<String, dynamic> charge) async {
+    final chargeId = (charge['charge_id'] ?? '').toString().trim();
+    if (chargeId.isEmpty) return;
+    final payment = await _promptExtraChargePayment(charge);
+    if (payment == null) return;
+
+    final paymentMethod = payment['method'] ?? 'card';
+    final paymentReference = payment['reference'] ?? '';
+
+    try {
+      final payload = <String, dynamic>{
+        'charge_status': 'paid',
+        'paid_at': DateTime.now().toUtc().toIso8601String(),
+        'payment_method': paymentMethod,
+        'payment_reference': paymentReference,
+      };
+
+      try {
+        await _supa.from('booking_extra_charge').update(payload).eq('charge_id', chargeId);
+      } on PostgrestException {
+        await _supa.from('booking_extra_charge').update({
+          'charge_status': 'paid',
+          'paid_at': payload['paid_at'],
+        }).eq('charge_id', chargeId);
+      }
+
+      await _refreshExtraCharges();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Extra bill paid successfully by ${_chargePaymentMethodLabel(paymentMethod)}.',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to pay bill: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  Widget _buildExtraChargeSection() {
+    if (_loadingExtraCharges) {
+      return const _SectionCard(
+        title: 'Extra Bills & Damage Charges',
+        child: Padding(
+          padding: EdgeInsets.symmetric(vertical: 8),
+          child: Center(child: CircularProgressIndicator()),
+        ),
+      );
+    }
+    if (!_extraChargeTableReady) {
+      return const SizedBox.shrink();
+    }
+    if (_extraCharges.isEmpty) {
+      return _SectionCard(
+        title: 'Extra Bills & Damage Charges',
+        child: Text(
+          'No extra bills for this order yet.',
+          style: TextStyle(color: Colors.grey.shade800),
+        ),
+      );
+    }
+    return _SectionCard(
+      title: 'Extra Bills & Damage Charges',
+      child: Column(
+        children: _extraCharges.map((row) {
+          final status = _chargeStatusLabel(row['charge_status']);
+          final color = _chargeStatusColor(context, row['charge_status']);
+          final type = (row['charge_type'] ?? 'Other').toString();
+          final note = (row['remark'] ?? row['notes'] ?? '').toString().trim();
+          final amount = _money(row['amount']);
+          final paymentMethodLabel = _chargePaymentMethodLabel(
+            row['payment_method'] ?? row['charge_payment_method'],
+          );
+          final paymentReference = ((row['payment_reference'] ?? row['charge_payment_reference']) ?? '')
+              .toString()
+              .trim();
+          final isPending = status == 'Pending';
+          return Container(
+            width: double.infinity,
+            margin: const EdgeInsets.only(bottom: 10),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: color.withOpacity(0.25)),
+              color: color.withOpacity(0.06),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        type[0].toUpperCase() + type.substring(1),
+                        style: const TextStyle(fontWeight: FontWeight.w800),
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: color.withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(color: color.withOpacity(0.35)),
+                      ),
+                      child: Text(
+                        status,
+                        style: TextStyle(color: color, fontWeight: FontWeight.w800, fontSize: 12),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text('Amount: $amount', style: const TextStyle(fontWeight: FontWeight.w700)),
+                if (note.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text(note, style: TextStyle(color: Colors.grey.shade800, height: 1.3)),
+                ],
+                if (status == 'Paid' && paymentMethodLabel != '-') ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    'Payment method: $paymentMethodLabel',
+                    style: TextStyle(color: Colors.grey.shade800, fontWeight: FontWeight.w600),
+                  ),
+                ],
+                if (status == 'Paid' && paymentReference.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    'Reference: $paymentReference',
+                    style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
+                  ),
+                ],
+                if (isPending) ...[
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton(
+                      onPressed: () => _payExtraCharge(row),
+                      child: const Text('Pay now'),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          );
+        }).toList(),
+      ),
+    );
   }
 
   DateTime? _dt(dynamic v) {
@@ -639,10 +1089,10 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
     }
   }
 
-  Future<Map<String, String>> _uploadEvidence(String stage, Map<String, _CapturedEvidence> files) async {
+  Future<Map<String, _UploadedEvidenceAsset>> _uploadEvidence(String stage, Map<String, _CapturedEvidence> files) async {
     final bookingId = (_b['booking_id'] ?? '').toString().trim();
-    if (bookingId.isEmpty || files.isEmpty) return const <String, String>{};
-    final urls = <String, String>{};
+    if (bookingId.isEmpty || files.isEmpty) return const <String, _UploadedEvidenceAsset>{};
+    final uploaded = <String, _UploadedEvidenceAsset>{};
     for (final entry in files.entries) {
       final side = entry.key;
       final file = entry.value;
@@ -654,9 +1104,35 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
         file.bytes,
         fileOptions: FileOptions(contentType: contentType, upsert: true),
       );
-      urls[side] = _supa.storage.from(_evidenceBucket).getPublicUrl(path);
+      uploaded[side] = _UploadedEvidenceAsset(
+        path: path,
+        url: _evidencePublicUrl(path),
+      );
     }
-    return urls;
+    return uploaded;
+  }
+
+  Future<void> _saveEvidenceRows(
+    String bookingId,
+    String stage,
+    Map<String, _UploadedEvidenceAsset> uploadedEvidence,
+  ) async {
+    if (bookingId.isEmpty || uploadedEvidence.isEmpty) return;
+    final rows = <Map<String, dynamic>>[];
+    for (final entry in uploadedEvidence.entries) {
+      rows.add({
+        'booking_id': bookingId,
+        'stage': stage,
+        'side': entry.key,
+        'storage_path': entry.value.path,
+        'image_url': entry.value.url,
+      });
+    }
+    try {
+      await _supa.from('booking_evidence').upsert(rows);
+    } catch (_) {
+      // Optional helper table. Ignore when not available.
+    }
   }
 
   Future<void> _capturePickupFlow() async {
@@ -674,11 +1150,11 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
     setState(() => _processingLifecycleAction = true);
     final pickupTime = DateTime.now();
     try {
-      Map<String, String> uploadedUrls = const <String, String>{};
+      Map<String, _UploadedEvidenceAsset> uploadedEvidence = const <String, _UploadedEvidenceAsset>{};
       var evidenceStoredRemotely = false;
       try {
-        uploadedUrls = await _uploadEvidence('pickup', capture);
-        evidenceStoredRemotely = uploadedUrls.isNotEmpty;
+        uploadedEvidence = await _uploadEvidence('pickup', capture);
+        evidenceStoredRemotely = uploadedEvidence.isNotEmpty;
       } catch (_) {
         evidenceStoredRemotely = false;
       }
@@ -691,14 +1167,17 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
       final extraPatch = <String, dynamic>{
         'pickup_completed_at': pickupTime.toUtc().toIso8601String(),
         'lock_demo_state': 'locked',
-        for (final side in _evidenceSides)
-          'pickup_${side}_url': uploadedUrls[side],
+        for (final side in _evidenceSides) ...{
+          'pickup_${side}_url': uploadedEvidence[side]?.url,
+          'pickup_${side}_path': uploadedEvidence[side]?.path,
+        },
       };
       try {
         await _supa.from('booking').update(extraPatch).eq('booking_id', bookingId);
       } catch (_) {
         // Demo-safe: keep UI state even if schema is not ready.
       }
+      await _saveEvidenceRows(bookingId, 'pickup', uploadedEvidence);
 
       if (!mounted) return;
       setState(() {
@@ -706,8 +1185,12 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
         _b['pickup_completed_at'] = pickupTime.toUtc().toIso8601String();
         _b['lock_demo_state'] = 'locked';
         for (final side in _evidenceSides) {
-          if ((uploadedUrls[side] ?? '').isNotEmpty) {
-            _b['pickup_${side}_url'] = uploadedUrls[side];
+          final asset = uploadedEvidence[side];
+          if ((asset?.url ?? '').isNotEmpty) {
+            _b['pickup_${side}_url'] = asset!.url;
+          }
+          if ((asset?.path ?? '').isNotEmpty) {
+            _b['pickup_${side}_path'] = asset!.path;
           }
           _pickupLocalPhotos[side] = capture[side]!.bytes;
         }
@@ -798,11 +1281,11 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
     final dropoffTime = DateTime.now();
     final penalty = _overtimePenaltyAmount(effectiveDropoffTime: dropoffTime);
     try {
-      Map<String, String> uploadedUrls = const <String, String>{};
+      Map<String, _UploadedEvidenceAsset> uploadedEvidence = const <String, _UploadedEvidenceAsset>{};
       var evidenceStoredRemotely = false;
       try {
-        uploadedUrls = await _uploadEvidence('dropoff', capture);
-        evidenceStoredRemotely = uploadedUrls.isNotEmpty;
+        uploadedEvidence = await _uploadEvidence('dropoff', capture);
+        evidenceStoredRemotely = uploadedEvidence.isNotEmpty;
       } catch (_) {
         evidenceStoredRemotely = false;
       }
@@ -817,14 +1300,17 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
         'actual_dropoff_at': dropoffTime.toUtc().toIso8601String(),
         'overtime_penalty_amount': penalty,
         'lock_demo_state': 'locked',
-        for (final side in _evidenceSides)
-          'dropoff_${side}_url': uploadedUrls[side],
+        for (final side in _evidenceSides) ...{
+          'dropoff_${side}_url': uploadedEvidence[side]?.url,
+          'dropoff_${side}_path': uploadedEvidence[side]?.path,
+        },
       };
       try {
         await _supa.from('booking').update(extraPatch).eq('booking_id', bookingId);
       } catch (_) {
         // Demo-safe: keep the status transition even if extra columns are missing.
       }
+      await _saveEvidenceRows(bookingId, 'dropoff', uploadedEvidence);
 
       if (!mounted) return;
       setState(() {
@@ -834,8 +1320,12 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
         _b['overtime_penalty_amount'] = penalty;
         _b['lock_demo_state'] = 'locked';
         for (final side in _evidenceSides) {
-          if ((uploadedUrls[side] ?? '').isNotEmpty) {
-            _b['dropoff_${side}_url'] = uploadedUrls[side];
+          final asset = uploadedEvidence[side];
+          if ((asset?.url ?? '').isNotEmpty) {
+            _b['dropoff_${side}_url'] = asset!.url;
+          }
+          if ((asset?.path ?? '').isNotEmpty) {
+            _b['dropoff_${side}_path'] = asset!.path;
           }
           _dropoffLocalPhotos[side] = capture[side]!.bytes;
         }
@@ -1232,7 +1722,9 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
                 _buildEvidenceCard('pickup', 'Pickup Inspection Photos', 'No pickup photo'),
                 if (_hasAnyEvidence('pickup')) const SizedBox(height: 12),
                 _buildEvidenceCard('dropoff', 'Drop-off Inspection Photos', 'No drop-off photo'),
-                if (_hasAnyEvidence('dropoff')) const SizedBox(height: 14),
+                if (_hasAnyEvidence('dropoff')) const SizedBox(height: 12),
+                _buildExtraChargeSection(),
+                const SizedBox(height: 14),
                 const Text('Car Details', style: TextStyle(fontWeight: FontWeight.w900)),
                 const SizedBox(height: 10),
                 Row(
@@ -1459,6 +1951,16 @@ class _CapturedEvidence {
 
   final Uint8List bytes;
   final String extension;
+}
+
+class _UploadedEvidenceAsset {
+  const _UploadedEvidenceAsset({
+    required this.path,
+    required this.url,
+  });
+
+  final String path;
+  final String url;
 }
 
 class _EvidenceCapturePage extends StatefulWidget {

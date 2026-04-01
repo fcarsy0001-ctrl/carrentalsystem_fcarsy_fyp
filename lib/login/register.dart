@@ -566,7 +566,7 @@ class _RegisterPageState extends State<RegisterPage> {
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
                                     Text(
-                                      country.flag,
+                                      country.safeFlagLabel,
                                       style: const TextStyle(fontSize: 18),
                                     ),
                                     const SizedBox(width: 6),
