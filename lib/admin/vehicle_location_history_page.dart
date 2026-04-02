@@ -28,7 +28,9 @@ class _VehicleLocationHistoryPageState extends State<VehicleLocationHistoryPage>
   }
 
   Future<void> _refresh() async {
-    setState(() => _future = _service.fetchHistory(vehicleId: _s(widget.record['vehicle_id'])));
+    setState(() {
+      _future = _service.fetchHistory(vehicleId: _s(widget.record['vehicle_id']));
+    });
     await _future;
   }
 
@@ -108,7 +110,6 @@ class _VehicleLocationHistoryPageState extends State<VehicleLocationHistoryPage>
                   plate: plate.isEmpty ? _s(widget.record['vehicle_id']) : plate,
                   title: title.isEmpty ? 'Vehicle' : title,
                   currentBranch: _s(widget.record['vehicle_location']),
-                  currentSlot: _s(widget.record['current_parking_slot']),
                 ),
                 const SizedBox(height: 12),
                 Row(
@@ -139,14 +140,12 @@ class _VehicleLocationHistoryPageState extends State<VehicleLocationHistoryPage>
                 else
                   ...List.generate(rows.length, (index) {
                     final row = rows[index];
-                    final slot = _service.parseParkingSlot(row);
                     final remark = _service.parseRemarks(row);
                     final movedAt = _dt(row['moved_at']);
                     return Padding(
                       padding: const EdgeInsets.only(bottom: 12),
                       child: _TimelineCard(
                         branch: _s(row['new_location']).isEmpty ? 'Unknown branch' : _s(row['new_location']),
-                        parkingSlot: slot,
                         remark: remark,
                         movedBy: _s(row['moved_by']),
                         movedAt: _fmt(movedAt),
@@ -168,13 +167,11 @@ class _HeaderCard extends StatelessWidget {
     required this.plate,
     required this.title,
     required this.currentBranch,
-    required this.currentSlot,
   });
 
   final String plate;
   final String title;
   final String currentBranch;
-  final String currentSlot;
 
   @override
   Widget build(BuildContext context) {
@@ -196,10 +193,6 @@ class _HeaderCard extends StatelessWidget {
           Text('Current Branch', style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w700, fontSize: 12)),
           const SizedBox(height: 4),
           Text(currentBranch.isEmpty ? 'Not assigned' : currentBranch, style: const TextStyle(fontWeight: FontWeight.w800)),
-          const SizedBox(height: 10),
-          Text('Current Slot', style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w700, fontSize: 12)),
-          const SizedBox(height: 4),
-          Text(currentSlot.isEmpty ? 'Not assigned' : currentSlot, style: const TextStyle(fontWeight: FontWeight.w800)),
         ],
       ),
     );
@@ -237,7 +230,6 @@ class _MiniStat extends StatelessWidget {
 class _TimelineCard extends StatelessWidget {
   const _TimelineCard({
     required this.branch,
-    required this.parkingSlot,
     required this.remark,
     required this.movedBy,
     required this.movedAt,
@@ -245,7 +237,6 @@ class _TimelineCard extends StatelessWidget {
   });
 
   final String branch;
-  final String parkingSlot;
   final String remark;
   final String movedBy;
   final String movedAt;
@@ -298,8 +289,6 @@ class _TimelineCard extends StatelessWidget {
                     child: Text('Current location', style: TextStyle(color: cs.onPrimaryContainer, fontWeight: FontWeight.w800, fontSize: 12)),
                   ),
                 Text(branch, style: const TextStyle(fontWeight: FontWeight.w900)),
-                const SizedBox(height: 6),
-                Text(parkingSlot.isEmpty ? 'Parking slot not recorded' : 'Parking slot: $parkingSlot'),
                 if (remark.isNotEmpty) ...[
                   const SizedBox(height: 8),
                   Text(remark, style: TextStyle(color: cs.onSurfaceVariant)),
@@ -332,3 +321,11 @@ class _TimelineEmpty extends StatelessWidget {
     );
   }
 }
+
+
+
+
+
+
+
+

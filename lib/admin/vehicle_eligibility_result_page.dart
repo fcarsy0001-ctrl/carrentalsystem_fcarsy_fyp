@@ -42,6 +42,18 @@ class _VehicleEligibilityResultPageState extends State<VehicleEligibilityResultP
     return int.tryParse(value.toString()) ?? 0;
   }
 
+  DateTime? _dt(dynamic value) {
+    final text = _s(value);
+    if (text.isEmpty) return null;
+    return DateTime.tryParse(text);
+  }
+
+  String _fmtDate(dynamic value) {
+    final date = _dt(value);
+    if (date == null) return '-';
+    return '${date.day}/${date.month}/${date.year}';
+  }
+
   @override
   void initState() {
     super.initState();
@@ -69,13 +81,34 @@ class _VehicleEligibilityResultPageState extends State<VehicleEligibilityResultP
     _inspectionDate = rawDate.isEmpty ? null : DateTime.tryParse(rawDate);
   }
 
+  void _applyReviewStatusPreset(String status) {
+    setState(() {
+      _reviewStatus = status;
+      if (status == 'Approved') {
+        _eligibilityStatus = 'Eligible';
+        _readinessStatus = 'Ready';
+        _inspectionResult = 'Pass';
+        _inspectionDate ??= DateTime.now();
+      } else if (status == 'Rejected') {
+        _eligibilityStatus = 'Rejected';
+        _readinessStatus = 'Rejected';
+        _inspectionResult = 'Fail';
+        _inspectionDate ??= DateTime.now();
+      }
+    });
+  }
+
   Future<void> _pickInspectionDate() async {
     final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final initialDate = _inspectionDate != null && !_inspectionDate!.isBefore(today)
+        ? _inspectionDate!
+        : today;
     final picked = await showDatePicker(
       context: context,
-      firstDate: DateTime(now.year - 2, 1, 1),
+      firstDate: today,
       lastDate: DateTime(now.year + 1, 12, 31),
-      initialDate: _inspectionDate ?? now,
+      initialDate: initialDate,
     );
     if (picked == null) return;
     setState(() => _inspectionDate = picked);
@@ -161,13 +194,28 @@ class _VehicleEligibilityResultPageState extends State<VehicleEligibilityResultP
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final eligible = _s(_record['eligibility_status']).toLowerCase() == 'eligible';
+    final currentEligibility = widget.isAdminMode
+        ? _eligibilityStatus
+        : (_s(_record['eligibility_status']).isEmpty ? 'Pending' : _s(_record['eligibility_status']));
+    final currentReadiness = widget.isAdminMode
+        ? _readinessStatus
+        : (_s(_record['readiness_status']).isEmpty ? 'Pending' : _s(_record['readiness_status']));
+    final currentReviewStatus = widget.isAdminMode
+        ? _reviewStatus
+        : (_s(_record['review_status']).isEmpty ? 'Pending Review' : _s(_record['review_status']));
+    final currentInspectionResult = widget.isAdminMode
+        ? _inspectionResult
+        : _s(_record['inspection_result']);
+    final currentConditionStatus = widget.isAdminMode
+        ? _conditionStatus
+        : (_s(_record['condition_status']).isEmpty ? 'Pending' : _s(_record['condition_status']));
+    final eligible = currentEligibility.toLowerCase() == 'eligible';
     final title = '${_s(_record['vehicle_brand'])} ${_s(_record['vehicle_model'])}'.trim();
     final plate = _s(_record['vehicle_plate_no']);
     final year = _i(_record['vehicle_year']);
 
     final topColor = eligible ? Colors.green : Colors.orange;
-    final topText = eligible ? 'Eligible' : (_s(_record['eligibility_status']).isEmpty ? 'Pending' : _s(_record['eligibility_status']));
+    final topText = eligible ? 'Eligible' : (currentEligibility.isEmpty ? 'Pending' : currentEligibility);
 
     return Scaffold(
       appBar: AppBar(title: const Text('Eligibility Result')),
@@ -209,7 +257,7 @@ class _VehicleEligibilityResultPageState extends State<VehicleEligibilityResultP
                   children: [
                     const Text('Requirements Met', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
                     Text(
-                      '${_record['passed_checks'] ?? 0} of 4',
+                      '${_record['passed_checks'] ?? 0} of 5',
                       style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800),
                     ),
                   ],
@@ -219,7 +267,7 @@ class _VehicleEligibilityResultPageState extends State<VehicleEligibilityResultP
                   borderRadius: BorderRadius.circular(999),
                   child: LinearProgressIndicator(
                     minHeight: 8,
-                    value: ((_record['passed_checks'] ?? 0) as num).toDouble() / 4,
+                    value: (((_record['passed_checks'] ?? 0) as num).toDouble() / 5).clamp(0.0, 1.0),
                     backgroundColor: Colors.white.withOpacity(0.24),
                     valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
                   ),
@@ -258,7 +306,7 @@ class _VehicleEligibilityResultPageState extends State<VehicleEligibilityResultP
             description: 'Visual condition status from the latest vehicle submission or review.',
             passed: (_record['physical_passed'] as bool?) ?? false,
             requiredValue: 'Good or Excellent',
-            actualValue: _s(_record['condition_status']).isEmpty ? 'Pending' : _s(_record['condition_status']),
+            actualValue: currentConditionStatus.isEmpty ? 'Pending' : currentConditionStatus,
           ),
           const SizedBox(height: 12),
           _RequirementCard(
@@ -267,6 +315,18 @@ class _VehicleEligibilityResultPageState extends State<VehicleEligibilityResultP
             passed: (_record['docs_passed'] as bool?) ?? false,
             requiredValue: 'All documents valid',
             actualValue: _s(_record['supporting_docs_url']).isEmpty ? 'Incomplete' : 'Complete',
+          ),
+          const SizedBox(height: 12),
+          _RequirementCard(
+            title: 'Road Tax Validity',
+            description: 'Road tax must remain valid for at least 2 more months from today.',
+            passed: (_record['road_tax_passed'] as bool?) ?? false,
+            requiredValue: _s(_record['road_tax_min_expiry_date']).isEmpty
+                ? 'At least 2 more months remaining'
+                : 'On or after ${_fmtDate(_record['road_tax_min_expiry_date'])}',
+            actualValue: _s(_record['road_tax_expiry_date']).isEmpty
+                ? 'Not provided'
+                : _fmtDate(_record['road_tax_expiry_date']),
           ),
           const SizedBox(height: 12),
           Container(
@@ -294,9 +354,9 @@ class _VehicleEligibilityResultPageState extends State<VehicleEligibilityResultP
                   spacing: 8,
                   runSpacing: 8,
                   children: [
-                    AdminStatusChip(status: _s(_record['review_status']).isEmpty ? 'Pending Review' : _s(_record['review_status'])),
-                    AdminStatusChip(status: _s(_record['readiness_status']).isEmpty ? 'Pending' : _s(_record['readiness_status'])),
-                    if (_s(_record['inspection_result']).isNotEmpty) AdminStatusChip(status: _s(_record['inspection_result'])),
+                    AdminStatusChip(status: currentReviewStatus),
+                    AdminStatusChip(status: currentReadiness),
+                    if (currentInspectionResult.isNotEmpty) AdminStatusChip(status: currentInspectionResult),
                   ],
                 ),
               ],
@@ -319,10 +379,10 @@ class _VehicleEligibilityResultPageState extends State<VehicleEligibilityResultP
             ),
             child: _saving
                 ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
                 : Text(widget.isAdminMode ? 'Save Review Decision' : 'Done'),
           ),
         ],
@@ -353,7 +413,10 @@ class _VehicleEligibilityResultPageState extends State<VehicleEligibilityResultP
               DropdownMenuItem(value: 'Approved', child: Text('Approved')),
               DropdownMenuItem(value: 'Rejected', child: Text('Rejected')),
             ],
-            onChanged: _saving ? null : (value) => setState(() => _reviewStatus = value ?? _reviewStatus),
+            onChanged: _saving ? null : (value) {
+              final next = value ?? _reviewStatus;
+              _applyReviewStatusPreset(next);
+            },
           ),
           const SizedBox(height: 12),
           Row(
@@ -546,3 +609,10 @@ class _CheckValue extends StatelessWidget {
     );
   }
 }
+
+
+
+
+
+
+

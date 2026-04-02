@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../config/supabase_config.dart';
+import '../services/rentable_vehicle_service.dart';
+import '../services/road_tax_monitor_service.dart';
 import 'product_page.dart';
 
 class VehicleBrowsePage extends StatefulWidget {
@@ -41,7 +43,11 @@ class _VehicleBrowsePageState extends State<VehicleBrowsePage> {
   }
 
   Future<List<_BrowseVehicle>> _loadVehicles() async {
-    // Keep the list constrained to available cars by default.
+    final rentableService = RentableVehicleService(_supa);
+    await RoadTaxMonitorService(_supa).syncRoadTaxStates().catchError((_) {});
+    final activeLocations = await rentableService.fetchActiveLocationNames();
+    final blockedVehicleIds = await rentableService.fetchBlockedVehicleIds();
+
     final rows = await _supa
         .from('vehicle')
         .select()
@@ -49,7 +55,9 @@ class _VehicleBrowsePageState extends State<VehicleBrowsePage> {
         .order('vehicle_id', ascending: false);
 
     final list = (rows as List)
-        .map((e) => _BrowseVehicle.fromMap(Map<String, dynamic>.from(e as Map)))
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .where((row) => rentableService.isRentableVehicle(row, activeLocations, blockedVehicleIds))
+        .map(_BrowseVehicle.fromMap)
         .toList();
     return list;
   }
@@ -314,7 +322,7 @@ class _VehicleBrowsePageState extends State<VehicleBrowsePage> {
                 children: [
                   _SearchField(
                     controller: _searchCtrl,
-                    hintText: 'Search by model, location, type…',
+                    hintText: 'Search by model, location, typeâ€¦',
                     onClear: () {
                       _searchCtrl.clear();
                       FocusScope.of(context).unfocus();
@@ -377,41 +385,41 @@ class _VehicleBrowsePageState extends State<VehicleBrowsePage> {
                   Expanded(
                     child: filtered.isEmpty
                         ? Center(
-                            child: Text(
-                              'No cars match your search / filters.',
-                              style: TextStyle(color: Colors.grey.shade700),
-                            ),
-                          )
+                      child: Text(
+                        'No cars match your search / filters.',
+                        style: TextStyle(color: Colors.grey.shade700),
+                      ),
+                    )
                         : ListView.separated(
-                            itemCount: filtered.length,
-                            separatorBuilder: (_, __) => const SizedBox(height: 12),
-                            itemBuilder: (context, i) {
-                              final v = filtered[i];
-                              return _BrowseVehicleTile(
-                                vehicle: v,
-                                photoUrl: _vehiclePhotoPublicUrl(v.photoPath),
-                                onTap: () {
-                                  Navigator.of(context).push(
-                                    MaterialPageRoute(
-                                      builder: (_) => ProductPage(
-                                        vehicleId: v.vehicleId,
-                                        brand: v.brand,
-                                        model: v.model,
-                                        type: v.type,
-                                        plate: v.plate,
-                                        transmission: v.transmission,
-                                        fuelType: v.fuel,
-                                        seats: v.seats,
-                                        dailyRate: v.dailyRate,
-                                        location: v.location,
-                                        photoUrl: _vehiclePhotoPublicUrl(v.photoPath),
-                                      ),
-                                    ),
-                                  );
-                                },
-                              );
-                            },
-                          ),
+                      itemCount: filtered.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 12),
+                      itemBuilder: (context, i) {
+                        final v = filtered[i];
+                        return _BrowseVehicleTile(
+                          vehicle: v,
+                          photoUrl: _vehiclePhotoPublicUrl(v.photoPath),
+                          onTap: () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => ProductPage(
+                                  vehicleId: v.vehicleId,
+                                  brand: v.brand,
+                                  model: v.model,
+                                  type: v.type,
+                                  plate: v.plate,
+                                  transmission: v.transmission,
+                                  fuelType: v.fuel,
+                                  seats: v.seats,
+                                  dailyRate: v.dailyRate,
+                                  location: v.location,
+                                  photoUrl: _vehiclePhotoPublicUrl(v.photoPath),
+                                ),
+                              ),
+                            );
+                          },
+                        );
+                      },
+                    ),
                   ),
                 ],
               );
@@ -497,10 +505,10 @@ class _SearchField extends StatelessWidget {
         suffixIcon: controller.text.trim().isEmpty
             ? null
             : IconButton(
-                onPressed: onClear,
-                icon: const Icon(Icons.close_rounded),
-                tooltip: 'Clear',
-              ),
+          onPressed: onClear,
+          icon: const Icon(Icons.close_rounded),
+          tooltip: 'Clear',
+        ),
         filled: true,
         fillColor: Colors.grey.shade100,
         border: OutlineInputBorder(
@@ -548,7 +556,7 @@ class _DropdownField extends StatelessWidget {
               child: Text('Any'),
             ),
             ...items.map(
-              (e) => DropdownMenuItem<String?>(
+                  (e) => DropdownMenuItem<String?>(
                 value: e,
                 child: Text(e),
               ),
@@ -638,12 +646,12 @@ class _BrowseVehicleTile extends StatelessWidget {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      '${vehicle.type} • ${vehicle.location}',
+                      '${vehicle.type} â€¢ ${vehicle.location}',
                       style: TextStyle(color: Colors.grey.shade700),
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      'RM${vehicle.dailyRate.toStringAsFixed(0)}/day • ${vehicle.seats} seats',
+                      'RM${vehicle.dailyRate.toStringAsFixed(0)}/day â€¢ ${vehicle.seats} seats',
                       style: TextStyle(color: Colors.grey.shade700),
                     ),
                   ],
@@ -658,3 +666,5 @@ class _BrowseVehicleTile extends StatelessWidget {
     );
   }
 }
+
+

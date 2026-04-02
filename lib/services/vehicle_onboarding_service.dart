@@ -1,8 +1,9 @@
-import 'dart:typed_data';
+﻿import 'dart:typed_data';
 
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'leaser_vehicle_service.dart';
+import 'road_tax_monitor_service.dart';
 
 class VehicleOnboardingService {
   VehicleOnboardingService(this._client);
@@ -40,6 +41,9 @@ alter table public.vehicle
 alter table public.vehicle
   add column if not exists condition_status text default 'Pending';
 
+alter table public.vehicle
+  add column if not exists road_tax_expiry_date date;
+
 alter table public.vehicle_onboarding
   add column if not exists submitted_role text;
 
@@ -73,6 +77,20 @@ alter table public.vehicle_onboarding
     if (value is double) return value;
     if (value is num) return value.toDouble();
     return double.tryParse(value.toString()) ?? 0;
+  }
+
+  DateTime _mytToday() {
+    final now = DateTime.now().toUtc().add(const Duration(hours: 8));
+    return DateTime(now.year, now.month, now.day);
+  }
+
+  bool _isRoadTaxExpired(dynamic value) {
+    final raw = _s(value);
+    if (raw.isEmpty) return false;
+    final parsed = DateTime.tryParse(raw);
+    if (parsed == null) return false;
+    final expiry = DateTime(parsed.year, parsed.month, parsed.day);
+    return expiry.isBefore(_mytToday());
   }
 
   String _date(DateTime? value) {
@@ -159,6 +177,10 @@ alter table public.vehicle_onboarding
     }
   }
   Future<List<Map<String, dynamic>>> fetchVehicles({String? leaserId}) async {
+    await RoadTaxMonitorService(_client)
+        .syncRoadTaxStates(leaserId: leaserId)
+        .catchError((_) {});
+
     final base = _client.from('vehicle').select('*');
     final query = _s(leaserId).isEmpty ? base : base.eq('leaser_id', leaserId!.trim());
     final vehicles = _rows(await query.order('vehicle_id', ascending: false));
@@ -189,6 +211,8 @@ alter table public.vehicle_onboarding
         .toList();
   }
   Future<Map<String, dynamic>?> fetchVehicleDetail(String vehicleId) async {
+    await RoadTaxMonitorService(_client).syncRoadTaxStates().catchError((_) {});
+
     final rows = _rows(await _client.from('vehicle').select('*').eq('vehicle_id', vehicleId).limit(1));
     if (rows.isEmpty) return null;
 
@@ -259,6 +283,7 @@ alter table public.vehicle_onboarding
     required String conditionStatus,
     required bool hasVehiclePhoto,
     required bool hasSupportingDocs,
+    DateTime? roadTaxExpiryDate,
     String? storedEligibilityStatus,
     String? storedReadinessStatus,
     String? storedReviewStatus,
@@ -272,14 +297,21 @@ alter table public.vehicle_onboarding
     final condition = conditionStatus.trim().toLowerCase();
     final physicalPass = condition == 'excellent' || condition == 'good';
     final docsPass = hasVehiclePhoto && hasSupportingDocs;
+    final now = DateTime.now();
+    final minRoadTaxExpiryDate = DateTime(now.year, now.month + 2, now.day);
+    final normalizedRoadTaxExpiryDate = roadTaxExpiryDate == null
+        ? null
+        : DateTime(roadTaxExpiryDate.year, roadTaxExpiryDate.month, roadTaxExpiryDate.day);
+    final roadTaxPass = normalizedRoadTaxExpiryDate != null &&
+        !normalizedRoadTaxExpiryDate.isBefore(minRoadTaxExpiryDate);
 
-    final passedCount = [agePass, mileagePass, physicalPass, docsPass].where((v) => v).length;
+    final passedCount = [agePass, mileagePass, physicalPass, docsPass, roadTaxPass].where((v) => v).length;
 
     final reviewStatus = _s(storedReviewStatus).isEmpty ? 'Pending Review' : _s(storedReviewStatus);
-    final computedEligibility = passedCount == 4 ? 'Eligible' : 'Pending';
+    final computedEligibility = passedCount == 5 ? 'Eligible' : 'Pending';
     final eligibilityStatus = _s(storedEligibilityStatus).isEmpty ? computedEligibility : _s(storedEligibilityStatus);
 
-    final computedInspectionResult = passedCount == 4 ? 'Pass' : 'Pending';
+    final computedInspectionResult = passedCount == 5 ? 'Pass' : 'Pending';
     final inspectionResult = _s(storedInspectionResult).isEmpty
         ? computedInspectionResult
         : _s(storedInspectionResult);
@@ -299,12 +331,15 @@ alter table public.vehicle_onboarding
       'mileage_passed': mileagePass,
       'physical_passed': physicalPass,
       'docs_passed': docsPass,
+      'road_tax_passed': roadTaxPass,
+      'road_tax_min_expiry_date': _date(minRoadTaxExpiryDate),
+      'road_tax_expiry_date': _date(normalizedRoadTaxExpiryDate),
       'passed_checks': passedCount,
       'eligibility_status': eligibilityStatus,
       'readiness_status': readinessStatus,
       'review_status': reviewStatus,
       'inspection_result': inspectionResult,
-      'overall_passed': passedCount == 4,
+      'overall_passed': passedCount == 5,
     };
   }
 
@@ -324,6 +359,7 @@ alter table public.vehicle_onboarding
     required double dailyRate,
     required String location,
     required String conditionStatus,
+    DateTime? roadTaxExpiryDate,
     required String description,
     required String remarks,
     Uint8List? photoBytes,
@@ -372,6 +408,7 @@ alter table public.vehicle_onboarding
       conditionStatus: conditionStatus,
       hasVehiclePhoto: photoPath.isNotEmpty,
       hasSupportingDocs: docsPath.isNotEmpty,
+      roadTaxExpiryDate: roadTaxExpiryDate,
     );
 
     final vehiclePayload = <String, dynamic>{
@@ -390,6 +427,7 @@ alter table public.vehicle_onboarding
       'vehicle_year': vehicleYear,
       'mileage_km': mileageKm,
       'condition_status': conditionStatus.trim(),
+      'road_tax_expiry_date': roadTaxExpiryDate == null ? null : _date(roadTaxExpiryDate),
     };
     if (photoPath.isNotEmpty) {
       vehiclePayload['vehicle_photo_path'] = photoPath;
@@ -536,6 +574,7 @@ alter table public.vehicle_onboarding
     if (lower.contains('vehicle_year') ||
         lower.contains('mileage_km') ||
         lower.contains('condition_status') ||
+        lower.contains('road_tax_expiry_date') ||
         lower.contains('vehicle_onboarding') ||
         lower.contains('supporting_docs_url') ||
         lower.contains('inspection_result')) {
@@ -559,6 +598,9 @@ alter table public.vehicle_onboarding
     final review = _s(row['review_status']);
     final inspectionResult = _s(row['inspection_result']);
     final inspectionDate = _s(row['inspection_date']);
+    final roadTaxExpiryDate = _s(row['road_tax_expiry_date']);
+    final roadTaxPassed = row['road_tax_passed'] == true;
+    final roadTaxMinExpiryDate = _s(row['road_tax_min_expiry_date']);
     final notes = _s(row['readiness_notes']);
     final remark = _s(row['review_remark']);
 
@@ -574,6 +616,9 @@ Readiness Status: ${readiness.isEmpty ? '-' : readiness}
 Review Status: ${review.isEmpty ? '-' : review}
 Inspection Result: ${inspectionResult.isEmpty ? '-' : inspectionResult}
 Inspection Date: ${inspectionDate.isEmpty ? '-' : inspectionDate}
+Road Tax Expiry Date: ${roadTaxExpiryDate.isEmpty ? '-' : roadTaxExpiryDate}
+Road Tax Requirement: ${roadTaxMinExpiryDate.isEmpty ? 'At least 2 more months validity remaining' : 'On or after ' + roadTaxMinExpiryDate}
+Road Tax Check: ${roadTaxPassed ? 'Pass' : 'Fail'}
 Readiness Notes: ${notes.isEmpty ? '-' : notes}
 Review Remark: ${remark.isEmpty ? '-' : remark}
 ''';
@@ -588,13 +633,18 @@ Review Remark: ${remark.isEmpty ? '-' : remark}
     final extra = onboarding == null ? <String, dynamic>{} : Map<String, dynamic>.from(onboarding);
     final job = activeJob == null ? <String, dynamic>{} : Map<String, dynamic>.from(activeJob);
     final hasOpenJob = job.isNotEmpty;
+    final roadTaxExpired = _isRoadTaxExpired(base['road_tax_expiry_date']);
     final baseVehicleStatus = _s(base['vehicle_status']).isEmpty ? 'Pending' : _s(base['vehicle_status']);
-    final mergedVehicleStatus = hasOpenJob && baseVehicleStatus.toLowerCase() != 'inactive'
-        ? 'Maintenance'
-        : baseVehicleStatus;
-    final serviceLockReason = hasOpenJob
-        ? 'Blocked from rental because job order ${_s(job['job_order_id'])} is ${_s(job['status']).isEmpty ? 'Pending' : _s(job['status'])}.'
-        : '';
+    final mergedVehicleStatus = roadTaxExpired
+        ? 'Inactive'
+        : hasOpenJob && baseVehicleStatus.toLowerCase() != 'inactive'
+            ? 'Maintenance'
+            : baseVehicleStatus;
+    final serviceLockReason = roadTaxExpired
+        ? 'Blocked from rental because road tax expired on ${_s(base['road_tax_expiry_date'])}.'
+        : hasOpenJob
+            ? 'Blocked from rental because job order ${_s(job['job_order_id'])} is ${_s(job['status']).isEmpty ? 'Pending' : _s(job['status'])}.'
+            : '';
 
     final evaluation = evaluateVehicle(
       vehicleYear: _i(base['vehicle_year']),
@@ -602,6 +652,7 @@ Review Remark: ${remark.isEmpty ? '-' : remark}
       conditionStatus: _s(base['condition_status']).isEmpty ? 'Pending' : _s(base['condition_status']),
       hasVehiclePhoto: _s(base['vehicle_photo_path']).isNotEmpty,
       hasSupportingDocs: _s(extra['supporting_docs_url']).isNotEmpty,
+      roadTaxExpiryDate: DateTime.tryParse(_s(base['road_tax_expiry_date'])),
       storedEligibilityStatus: extra['eligibility_status']?.toString(),
       storedReadinessStatus: extra['readiness_status']?.toString(),
       storedReviewStatus: extra['review_status']?.toString(),
@@ -616,6 +667,7 @@ Review Remark: ${remark.isEmpty ? '-' : remark}
       'mileage_km': _i(base['mileage_km']),
       'daily_rate': _d(base['daily_rate']),
       'condition_status': _s(base['condition_status']).isEmpty ? 'Pending' : _s(base['condition_status']),
+      'road_tax_expiry_date': _s(base['road_tax_expiry_date']),
       'remarks': _s(extra['remarks']),
       'review_remark': _s(extra['review_remark']),
       'base_vehicle_status': baseVehicleStatus,
@@ -626,9 +678,21 @@ Review Remark: ${remark.isEmpty ? '-' : remark}
       'active_job_type': _s(job['job_type']),
       'active_job_preferred_date': _s(job['preferred_date']),
       'service_lock_reason': serviceLockReason,
+      'road_tax_expired': roadTaxExpired,
     };
   }
 }
+
+
+
+
+
+
+
+
+
+
+
 
 
 

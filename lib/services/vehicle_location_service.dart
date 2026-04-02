@@ -1,4 +1,6 @@
-import 'package:supabase_flutter/supabase_flutter.dart';
+﻿import 'package:supabase_flutter/supabase_flutter.dart';
+
+import 'road_tax_monitor_service.dart';
 
 class VehicleLocationService {
   VehicleLocationService(this._client);
@@ -10,16 +12,7 @@ alter table public.vehicle_location
   add column if not exists is_active boolean not null default true;
 
 alter table public.vehicle
-  add column if not exists vehicle_parking_slot text;
-
-alter table public.vehicle
   add column if not exists location_updated_at timestamp with time zone;
-
-alter table public.vehicle_location_history
-  add column if not exists previous_parking_slot text;
-
-alter table public.vehicle_location_history
-  add column if not exists new_parking_slot text;
 ''';
 
   String _s(dynamic value) => value == null ? '' : value.toString().trim();
@@ -30,6 +23,10 @@ alter table public.vehicle_location_history
   }
 
   Future<List<Map<String, dynamic>>> fetchVehicles({String? leaserId}) async {
+    await RoadTaxMonitorService(_client)
+        .syncRoadTaxStates(leaserId: leaserId)
+        .catchError((_) {});
+
     var query = _client.from('vehicle').select('*');
     if (_s(leaserId).isNotEmpty) {
       query = query.eq('leaser_id', leaserId!.trim());
@@ -64,6 +61,16 @@ alter table public.vehicle_location_history
     }
     output.sort();
     return output;
+  }
+
+  Future<int> countVehiclesAtLocation(String locationName) async {
+    final cleanName = locationName.trim();
+    if (cleanName.isEmpty) return 0;
+    final response = await _client
+        .from('vehicle')
+        .select('vehicle_id')
+        .eq('vehicle_location', cleanName);
+    return _rows(response).length;
   }
 
   Future<List<Map<String, dynamic>>> fetchHistory({String? vehicleId}) async {
@@ -133,7 +140,6 @@ alter table public.vehicle_location_history
   Future<void> updateLocation({
     required String vehicleId,
     required String newLocation,
-    required String parkingSlot,
     String? movedBy,
     String? remarks,
   }) async {
@@ -145,14 +151,12 @@ alter table public.vehicle_location_history
 
     final previous = current == null ? <String, dynamic>{} : Map<String, dynamic>.from(current as Map);
     final previousLocation = _s(previous['vehicle_location']);
-    final previousParkingSlot = _s(previous['vehicle_parking_slot']);
     final now = DateTime.now().toUtc().toIso8601String();
-    final note = _buildMovementReason(parkingSlot: parkingSlot, remarks: remarks);
+    final note = _buildMovementReason(remarks: remarks);
 
     try {
       await _client.from('vehicle').update({
         'vehicle_location': newLocation.trim(),
-        'vehicle_parking_slot': parkingSlot.trim(),
         'location_updated_at': now,
       }).eq('vehicle_id', vehicleId.trim());
     } catch (_) {
@@ -167,8 +171,6 @@ alter table public.vehicle_location_history
         'vehicle_id': vehicleId.trim(),
         'previous_location': previousLocation.isEmpty ? null : previousLocation,
         'new_location': newLocation.trim(),
-        'previous_parking_slot': previousParkingSlot.isEmpty ? null : previousParkingSlot,
-        'new_parking_slot': parkingSlot.trim().isEmpty ? null : parkingSlot.trim(),
         'moved_at': now,
         'moved_by': _s(movedBy).isEmpty ? null : _s(movedBy),
         'movement_reason': _s(remarks).isEmpty ? null : _s(remarks),
@@ -204,20 +206,6 @@ alter table public.vehicle_location_history
     return _s(vehicle['vehicle_id']).isEmpty ? 'Vehicle' : _s(vehicle['vehicle_id']);
   }
 
-  String parseParkingSlot(Map<String, dynamic> history) {
-    final direct = _s(history['new_parking_slot']);
-    if (direct.isNotEmpty) return direct;
-
-    final reason = _s(history['movement_reason']);
-    if (reason.isEmpty) return '';
-
-    final line = reason.split('\n').firstWhere(
-          (item) => item.toLowerCase().startsWith('parking slot:'),
-      orElse: () => '',
-    );
-    if (line.isEmpty) return '';
-    return line.split(':').skip(1).join(':').trim();
-  }
 
   String parseRemarks(Map<String, dynamic> history) {
     final reason = _s(history['movement_reason']);
@@ -227,12 +215,6 @@ alter table public.vehicle_location_history
     return cleaned.join('\n').trim();
   }
 
-  String currentParkingSlot(Map<String, dynamic> vehicle, {Map<String, dynamic>? latestHistory}) {
-    final direct = _s(vehicle['vehicle_parking_slot']);
-    if (direct.isNotEmpty) return direct;
-    if (latestHistory == null) return '';
-    return parseParkingSlot(latestHistory);
-  }
 
   String currentUpdatedAt(Map<String, dynamic> vehicle, {Map<String, dynamic>? latestHistory}) {
     final direct = _s(vehicle['location_updated_at']);
@@ -251,6 +233,13 @@ alter table public.vehicle_location_history
   String statusLabel(Map<String, dynamic> vehicle) {
     final location = _s(vehicle['vehicle_location']);
     final status = _s(vehicle['vehicle_status']).toLowerCase();
+    final roadTaxExpiry = DateTime.tryParse(_s(vehicle['road_tax_expiry_date']));
+    final today = DateTime.now().toUtc().add(const Duration(hours: 8));
+    final todayOnly = DateTime(today.year, today.month, today.day);
+    final expiryOnly = roadTaxExpiry == null
+        ? null
+        : DateTime(roadTaxExpiry.year, roadTaxExpiry.month, roadTaxExpiry.day);
+    if (expiryOnly != null && expiryOnly.isBefore(todayOnly)) return 'Inactive';
     if (!branchIsActive(vehicle)) return 'Inactive';
     if (status == 'inactive' || status.contains('deactive') || status == 'disabled') return 'Inactive';
     if (location.isEmpty) return 'Pending';
@@ -269,11 +258,8 @@ alter table public.vehicle_location_history
     return message;
   }
 
-  String _buildMovementReason({required String parkingSlot, String? remarks}) {
+  String _buildMovementReason({String? remarks}) {
     final lines = <String>[];
-    if (parkingSlot.trim().isNotEmpty) {
-      lines.add('Parking Slot: ${parkingSlot.trim()}');
-    }
     if (_s(remarks).isNotEmpty) {
       lines.add(_s(remarks));
     }
@@ -289,5 +275,19 @@ alter table public.vehicle_location_history
     return '$safePrefix$suffix';
   }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 

@@ -111,8 +111,9 @@ class _VehicleOnboardingStatusPageState extends State<VehicleOnboardingStatusPag
           selected['mileage_passed'] == true,
           selected['physical_passed'] == true,
           selected['docs_passed'] == true,
+          selected['road_tax_passed'] == true,
         ].where((value) => value).length;
-        final progress = passedChecks / 4;
+        final progress = passedChecks / 5;
 
         final content = RefreshIndicator(
           onRefresh: _refresh,
@@ -168,7 +169,7 @@ class _VehicleOnboardingStatusPageState extends State<VehicleOnboardingStatusPag
                         Expanded(
                           child: Text('Checks Passed', style: TextStyle(color: Colors.grey.shade700, fontWeight: FontWeight.w700)),
                         ),
-                        Text('$passedChecks/4', style: const TextStyle(fontWeight: FontWeight.w900)),
+                        Text('$passedChecks/5', style: const TextStyle(fontWeight: FontWeight.w900)),
                       ],
                     ),
                     const SizedBox(height: 8),
@@ -181,6 +182,7 @@ class _VehicleOnboardingStatusPageState extends State<VehicleOnboardingStatusPag
                     _CheckRow(label: 'Mileage Requirement', passed: selected['mileage_passed'] == true),
                     _CheckRow(label: 'Physical Condition', passed: selected['physical_passed'] == true),
                     _CheckRow(label: 'Document Verification', passed: selected['docs_passed'] == true),
+                    _CheckRow(label: 'Road Tax Validity', passed: selected['road_tax_passed'] == true),
                   ],
                 ),
               ),
@@ -403,4 +405,6 @@ class _CheckRow extends StatelessWidget {
     );
   }
 }
+
+
 

@@ -15,7 +15,6 @@ class UpdateVehicleLocationPage extends StatefulWidget {
 class _UpdateVehicleLocationPageState extends State<UpdateVehicleLocationPage> {
   final _formKey = GlobalKey<FormState>();
   final _branchController = TextEditingController();
-  final _slotController = TextEditingController();
   final _remarksController = TextEditingController();
 
   late final VehicleLocationService _service;
@@ -50,14 +49,12 @@ class _UpdateVehicleLocationPageState extends State<UpdateVehicleLocationPage> {
     _service = VehicleLocationService(Supabase.instance.client);
     _selectedBranch = _s(widget.record['vehicle_location']).isEmpty ? null : _s(widget.record['vehicle_location']);
     _branchController.text = _s(widget.record['vehicle_location']);
-    _slotController.text = _s(widget.record['current_parking_slot']);
     _loadBranches();
   }
 
   @override
   void dispose() {
     _branchController.dispose();
-    _slotController.dispose();
     _remarksController.dispose();
     super.dispose();
   }
@@ -93,7 +90,6 @@ class _UpdateVehicleLocationPageState extends State<UpdateVehicleLocationPage> {
       await _service.updateLocation(
         vehicleId: _s(widget.record['vehicle_id']),
         newLocation: branch,
-        parkingSlot: _slotController.text.trim(),
         movedBy: (user?.email ?? user?.id ?? '').trim(),
         remarks: _remarksController.text.trim(),
       );
@@ -142,7 +138,6 @@ class _UpdateVehicleLocationPageState extends State<UpdateVehicleLocationPage> {
                       runSpacing: 10,
                       children: [
                         _InfoPill(label: 'Current Branch', value: _s(widget.record['vehicle_location']).isEmpty ? 'Not assigned' : _s(widget.record['vehicle_location'])),
-                        _InfoPill(label: 'Current Slot', value: _s(widget.record['current_parking_slot']).isEmpty ? 'Not assigned' : _s(widget.record['current_parking_slot'])),
                       ],
                     ),
                   ],
@@ -157,10 +152,6 @@ class _UpdateVehicleLocationPageState extends State<UpdateVehicleLocationPage> {
                     Text('Branch', style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w700)),
                     const SizedBox(height: 4),
                     Text(_s(widget.record['vehicle_location']).isEmpty ? 'No branch assigned' : _s(widget.record['vehicle_location']), style: const TextStyle(fontWeight: FontWeight.w800)),
-                    const SizedBox(height: 12),
-                    Text('Parking Slot', style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w700)),
-                    const SizedBox(height: 4),
-                    Text(_s(widget.record['current_parking_slot']).isEmpty ? 'No slot assigned' : _s(widget.record['current_parking_slot']), style: const TextStyle(fontWeight: FontWeight.w800)),
                     const SizedBox(height: 12),
                     Text('Last Updated', style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w700)),
                     const SizedBox(height: 4),
@@ -195,12 +186,6 @@ class _UpdateVehicleLocationPageState extends State<UpdateVehicleLocationPage> {
                         decoration: const InputDecoration(labelText: 'Branch *', hintText: 'Enter branch name'),
                         validator: (value) => (value ?? '').trim().isEmpty ? 'Branch is required' : null,
                       ),
-                    const SizedBox(height: 12),
-                    TextFormField(
-                      controller: _slotController,
-                      decoration: const InputDecoration(labelText: 'Parking Slot *', hintText: 'e.g. A-15, B-22, C-08'),
-                      validator: (value) => (value ?? '').trim().isEmpty ? 'Parking slot is required' : null,
-                    ),
                     const SizedBox(height: 12),
                     TextFormField(
                       controller: _remarksController,
@@ -283,6 +268,13 @@ class _InfoPill extends StatelessWidget {
     );
   }
 }
+
+
+
+
+
+
+
 
 
 

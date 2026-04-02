@@ -143,8 +143,31 @@ class _VehicleLocationAdminPageState extends State<VehicleLocationAdminPage> {
 
   Future<void> _delete(Map<String, dynamic> row) async {
     final id = (row['location_id'] ?? '').toString();
-    final name = (row['location_name'] ?? '').toString();
+    final name = (row['location_name'] ?? '').toString().trim();
     if (id.isEmpty) return;
+
+    try {
+      final vehicleCount = await _service.countVehiclesAtLocation(name);
+      if (!mounted) return;
+      if (vehicleCount > 0) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'This branch still has $vehicleCount vehicle${vehicleCount == 1 ? '' : 's'}. Move or remove those vehicles first before deleting the branch.',
+            ),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 5),
+          ),
+        );
+        return;
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Delete validation failed: $error'), backgroundColor: Colors.red),
+      );
+      return;
+    }
 
     final confirmed = await showDialog<bool>(
       context: context,
@@ -175,8 +198,12 @@ class _VehicleLocationAdminPageState extends State<VehicleLocationAdminPage> {
       await _load();
     } catch (error) {
       if (!mounted) return;
+      final message = error.toString().toLowerCase().contains('foreign key') ||
+          error.toString().toLowerCase().contains('violates')
+          ? 'This branch still has vehicles assigned to it. Move those vehicles first before deleting the branch.'
+          : 'Delete failed: $error';
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Delete failed: $error'), backgroundColor: Colors.red),
+        SnackBar(content: Text(message), backgroundColor: Colors.red),
       );
     }
   }
@@ -388,3 +415,4 @@ class _AddLocationDialogState extends State<_AddLocationDialog> {
     );
   }
 }
+

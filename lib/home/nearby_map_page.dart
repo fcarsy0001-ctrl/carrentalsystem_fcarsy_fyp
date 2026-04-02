@@ -3,6 +3,9 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../services/rentable_vehicle_service.dart';
+import '../services/road_tax_monitor_service.dart';
+
 // NOTE: Requires pubspec.yaml dependencies:
 //   flutter_map: ^6.1.0
 //   latlong2: ^0.9.1
@@ -129,15 +132,21 @@ class _NearbyMapPageState extends State<NearbyMapPage> {
     });
 
     try {
+      final rentableService = RentableVehicleService(_supa);
+      await RoadTaxMonitorService(_supa).syncRoadTaxStates().catchError((_) {});
+      final activeLocations = await rentableService.fetchActiveLocationNames();
+      final blockedVehicleIds = await rentableService.fetchBlockedVehicleIds();
+
       final rows = await _supa
           .from('vehicle')
-          .select('vehicle_id, vehicle_brand, vehicle_model, vehicle_location, vehicle_status')
+          .select('vehicle_id, vehicle_brand, vehicle_model, vehicle_location, vehicle_status, road_tax_expiry_date')
           .eq('vehicle_status', 'Available')
           .order('vehicle_id', ascending: false)
           .limit(80);
 
       final list = (rows as List)
           .map((e) => Map<String, dynamic>.from(e as Map))
+          .where((row) => rentableService.isRentableVehicle(row, activeLocations, blockedVehicleIds))
           .map(_VehicleMini.fromMap)
           .toList();
 
@@ -329,7 +338,7 @@ class _NearbyMapPageState extends State<NearbyMapPage> {
                 Text('No cars at this location.', style: TextStyle(color: Colors.grey.shade700))
               else
                 ...vehicles.map(
-                  (v) => Padding(
+                      (v) => Padding(
                     padding: const EdgeInsets.symmetric(vertical: 6),
                     child: Row(
                       children: [
@@ -466,7 +475,7 @@ class _NearbyMapPageState extends State<NearbyMapPage> {
                       Expanded(
                         child: Text(
                           _geocoding
-                              ? 'Loading map pins… (converting location to coordinates)'
+                              ? 'Loading map pinsâ€¦ (converting location to coordinates)'
                               : 'Each pin shows the total cars at that parking location. Tap a pin to see the full car list.',
                           style: TextStyle(color: Colors.grey.shade700),
                         ),
@@ -521,3 +530,5 @@ class _VehicleMini {
     return _VehicleMini(id: id, title: title, location: location, status: status);
   }
 }
+
+

@@ -51,6 +51,7 @@ class _VehicleRegistrationPageState extends State<VehicleRegistrationPage> {
   String _conditionStatus = 'Good';
   List<String> _locations = const [];
   String? _selectedLocation;
+  DateTime? _roadTaxExpiryDate;
 
   Uint8List? _photoBytes;
   String? _photoExt;
@@ -115,6 +116,7 @@ class _VehicleRegistrationPageState extends State<VehicleRegistrationPage> {
       _fuelType = _matchOption(_fuelTypes, _s(initial['fuel_type']), _fuelType);
       _conditionStatus = _matchOption(_conditionTypes, _s(initial['condition_status']), _conditionStatus);
       _selectedLocation = _s(initial['vehicle_location']).isEmpty ? null : _s(initial['vehicle_location']);
+      _roadTaxExpiryDate = DateTime.tryParse(_s(initial['road_tax_expiry_date']));
       _existingPhotoPath = _s(initial['vehicle_photo_path']);
       _existingDocsPath = _s(initial['supporting_docs_url']);
       _docsFileName = _friendlyDocumentName(_existingDocsPath);
@@ -144,6 +146,24 @@ class _VehicleRegistrationPageState extends State<VehicleRegistrationPage> {
       if (option.toLowerCase() == raw.toLowerCase()) return option;
     }
     return fallback;
+  }
+
+  String _dateLabel(DateTime? value) {
+    if (value == null) return 'Select road tax expiry date';
+    return '${value.day}/${value.month}/${value.year}';
+  }
+
+  Future<void> _pickRoadTaxExpiryDate() async {
+    final now = DateTime.now();
+    final initialDate = _roadTaxExpiryDate ?? now;
+    final picked = await showDatePicker(
+      context: context,
+      firstDate: DateTime(now.year - 2, 1, 1),
+      lastDate: DateTime(now.year + 10, 12, 31),
+      initialDate: initialDate,
+    );
+    if (picked == null || !mounted) return;
+    setState(() => _roadTaxExpiryDate = picked);
   }
 
   String _friendlyDocumentName(String? path) {
@@ -372,6 +392,13 @@ class _VehicleRegistrationPageState extends State<VehicleRegistrationPage> {
     if (!_formKey.currentState!.validate()) return;
     if (_saving) return;
 
+    if (_roadTaxExpiryDate == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please select the road tax expiry date.')),
+      );
+      return;
+    }
+
     if ((_selectedLocation ?? '').trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please add or select a vehicle location first.')),
@@ -406,6 +433,7 @@ class _VehicleRegistrationPageState extends State<VehicleRegistrationPage> {
         dailyRate: double.parse(_rateController.text.trim()),
         location: _selectedLocation!.trim(),
         conditionStatus: _conditionStatus,
+        roadTaxExpiryDate: _roadTaxExpiryDate,
         description: _descriptionController.text.trim(),
         remarks: _remarksController.text.trim(),
         photoBytes: _photoBytes,
@@ -511,6 +539,41 @@ class _VehicleRegistrationPageState extends State<VehicleRegistrationPage> {
                         if (year < currentYear - 15 || year > currentYear + 1) return 'Enter a realistic vehicle year';
                         return null;
                       },
+                    ),
+                    const SizedBox(height: 12),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Road Tax Expiry Date *',
+                          style: TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                _dateLabel(_roadTaxExpiryDate),
+                                style: TextStyle(
+                                  color: _roadTaxExpiryDate == null ? cs.onSurfaceVariant : cs.onSurface,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                            if (_roadTaxExpiryDate != null)
+                              IconButton(
+                                tooltip: 'Clear date',
+                                onPressed: _saving ? null : () => setState(() => _roadTaxExpiryDate = null),
+                                icon: const Icon(Icons.close_rounded),
+                              ),
+                            OutlinedButton(
+                              onPressed: _saving ? null : _pickRoadTaxExpiryDate,
+                              child: const Text('Pick date'),
+                            ),
+                          ],
+                        ),
+                        const Divider(height: 1),
+                      ],
                     ),
                   ],
                 ),
@@ -681,10 +744,10 @@ class _VehicleRegistrationPageState extends State<VehicleRegistrationPage> {
                       onPressed: (_saving || _aiFilling || _photoBytes == null) ? null : _runAiAutoFill,
                       icon: _aiFilling
                           ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
                           : const Icon(Icons.auto_awesome_outlined),
                       label: Text(_aiFilling ? 'Reading photo...' : 'Auto Fill From Photo'),
                     ),
@@ -933,6 +996,10 @@ class _PreviewBox extends StatelessWidget {
     );
   }
 }
+
+
+
+
 
 
 

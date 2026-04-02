@@ -92,7 +92,6 @@ class _VehicleLocationDashboardPageState extends State<VehicleLocationDashboardP
       final record = {
         ...vehicle,
         'branch_is_active': activeLocations[_s(vehicle['vehicle_location'])] ?? true,
-        'current_parking_slot': _service.currentParkingSlot(vehicle, latestHistory: latest),
         'location_last_updated': _service.currentUpdatedAt(vehicle, latestHistory: latest),
       };
       return {
@@ -215,7 +214,6 @@ class _VehicleLocationDashboardPageState extends State<VehicleLocationDashboardP
         _s(vehicle['vehicle_brand']),
         _s(vehicle['vehicle_model']),
         _s(vehicle['vehicle_location']),
-        _s(vehicle['current_parking_slot']),
         status,
       ].join(' ').toLowerCase();
 
@@ -255,7 +253,7 @@ class _VehicleLocationDashboardPageState extends State<VehicleLocationDashboardP
         TextField(
           controller: _searchController,
           decoration: InputDecoration(
-            hintText: 'Search branch, plate, slot...',
+            hintText: 'Search branch, plate, vehicle...',
             prefixIcon: const Icon(Icons.search_rounded),
             suffixIcon: PopupMenuButton<String>(
               tooltip: 'Filter status',
@@ -364,7 +362,7 @@ class _VehicleLocationDashboardPageState extends State<VehicleLocationDashboardP
             icon: Icons.place_outlined,
             title: widget.title ?? (_isAdminMode ? 'Vehicle Locations' : 'My Vehicle Locations'),
             subtitle: _isAdminMode
-                ? 'Real-time tracking across all branches and parking slots.'
+                ? 'Real-time tracking across all branches.'
                 : 'Track where your vehicles are currently assigned.',
             actions: [
               IconButton(
@@ -500,7 +498,6 @@ class _LocationVehicleCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final slot = _s(record['current_parking_slot']);
     final status = _s(record['location_status_label']).isEmpty ? 'Other' : _s(record['location_status_label']);
     final branchActive = record['branch_is_active'] as bool? ?? true;
     final isInactive = status.toLowerCase() == 'inactive';
@@ -537,19 +534,6 @@ class _LocationVehicleCard extends StatelessWidget {
               const SizedBox(height: 8),
               Row(
                 children: [
-                  Icon(Icons.local_parking_outlined, size: 16, color: Colors.grey.shade700),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      slot.isEmpty ? 'Parking slot not assigned' : slot,
-                      style: TextStyle(color: Colors.grey.shade700),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 6),
-              Row(
-                children: [
                   Icon(Icons.update_outlined, size: 16, color: Colors.grey.shade700),
                   const SizedBox(width: 6),
                   Expanded(
@@ -578,6 +562,12 @@ class _LocationVehicleCard extends StatelessWidget {
     );
   }
 }
+
+
+
+
+
+
 
 
 
