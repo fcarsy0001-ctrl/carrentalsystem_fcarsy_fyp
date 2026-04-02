@@ -11,6 +11,8 @@ class JobOrderModuleService {
 
   static const String setupFilePath = 'supabase/job_order_chapter4_patch.sql';
 
+  static const String paymentSetupFilePath = 'supabase/service_job_payment_patch.sql';
+
   static const String setupHint =
       'Run the SQL in supabase/job_order_chapter4_patch.sql to create the Job Order tables, activity log, and attachment bucket.';
 
@@ -228,6 +230,51 @@ class JobOrderModuleService {
     return category.isEmpty ? name : '$name ($category)';
   }
 
+  Future<Map<String, dynamic>?> resolveCurrentVendor({String? requestedVendorId}) async {
+    final user = _client.auth.currentUser;
+    if (user == null) return null;
+
+    final cleanRequestedId = _s(requestedVendorId);
+    if (cleanRequestedId.isNotEmpty) {
+      try {
+        final row = await _client
+            .from('vendor')
+            .select('*')
+            .eq('vendor_id', cleanRequestedId)
+            .limit(1)
+            .maybeSingle();
+        if (row != null) return Map<String, dynamic>.from(row as Map);
+      } catch (_) {}
+    }
+
+    try {
+      final row = await _client
+          .from('vendor')
+          .select('*')
+          .eq('auth_uid', user.id)
+          .order('vendor_id', ascending: false)
+          .limit(1)
+          .maybeSingle();
+      if (row != null) return Map<String, dynamic>.from(row as Map);
+    } catch (_) {}
+
+    final email = _s(user.email).toLowerCase();
+    if (email.isNotEmpty) {
+      try {
+        final row = await _client
+            .from('vendor')
+            .select('*')
+            .eq('vendor_email', email)
+            .order('vendor_id', ascending: false)
+            .limit(1)
+            .maybeSingle();
+        if (row != null) return Map<String, dynamic>.from(row as Map);
+      } catch (_) {}
+    }
+
+    return null;
+  }
+
   Future<List<Map<String, dynamic>>> fetchVehicles({String? leaserId}) async {
     var query = _client
         .from('vehicle')
@@ -343,6 +390,137 @@ class JobOrderModuleService {
     return _rows(response);
   }
 
+  Future<List<Map<String, dynamic>>> fetchServicePayments({
+    List<String>? jobOrderIds,
+    String? jobOrderId,
+    String? serviceCostId,
+    String? vendorId,
+    String? leaserId,
+  }) async {
+    var query = _client.from('service_job_payment').select('*');
+
+    if (_s(vendorId).isNotEmpty) {
+      query = query.eq('vendor_id', vendorId!.trim());
+    }
+    if (_s(leaserId).isNotEmpty) {
+      query = query.eq('leaser_id', leaserId!.trim());
+    }
+    if (_s(serviceCostId).isNotEmpty) {
+      query = query.eq('service_cost_id', serviceCostId!.trim());
+    }
+    if (_s(jobOrderId).isNotEmpty) {
+      query = query.eq('job_order_id', jobOrderId!.trim());
+    }
+
+    if (jobOrderIds != null) {
+      final ids = jobOrderIds.map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+      if (ids.isEmpty) return const [];
+      query = query.inFilter('job_order_id', ids);
+    }
+
+    final response = await query.order('paid_at', ascending: false);
+    return _rows(response);
+  }
+
+  Future<void> createServicePayment({
+    required String serviceCostId,
+    required String jobOrderId,
+    required String leaserId,
+    required String vendorId,
+    required double amountPaid,
+    required String paymentMethod,
+    required String paymentReference,
+    String? notes,
+  }) async {
+    final cleanServiceCostId = serviceCostId.trim();
+    final cleanJobOrderId = jobOrderId.trim();
+    final cleanLeaserId = leaserId.trim();
+    final cleanVendorId = vendorId.trim();
+    final cleanPaymentMethod = paymentMethod.trim();
+    final cleanPaymentReference = paymentReference.trim();
+    final user = _client.auth.currentUser;
+    final actor = _s(user?.email).isEmpty ? _s(user?.id) : _s(user?.email);
+
+    await _client.from('service_job_payment').insert({
+      'service_payment_id': newId('SPM'),
+      'service_cost_id': cleanServiceCostId,
+      'job_order_id': cleanJobOrderId,
+      'leaser_id': cleanLeaserId,
+      'vendor_id': cleanVendorId,
+      'amount_paid': amountPaid,
+      'payment_method': cleanPaymentMethod,
+      'payment_reference': cleanPaymentReference,
+      'payment_status': 'Paid',
+      'notes': _s(notes).isEmpty ? null : _s(notes),
+      'paid_at': DateTime.now().toUtc().toIso8601String(),
+    });
+
+    await _client
+        .from('service_cost')
+        .update({
+      'payment_status': 'Paid',
+      'updated_at': DateTime.now().toUtc().toIso8601String(),
+    })
+        .eq('service_cost_id', cleanServiceCostId);
+
+    await addJobActivity(
+      jobOrderId: cleanJobOrderId,
+      activityType: 'payment_received',
+      title: 'Service payment completed',
+      detail: 'Leaser paid RM ${amountPaid.toStringAsFixed(2)} via $cleanPaymentMethod.',
+      actorName: actor,
+    );
+  }
+
+  Future<void> updateVendorProfile({
+    required String vendorId,
+    required String vendorName,
+    required String serviceCategory,
+    required String contactPerson,
+    required String phone,
+    required String email,
+    required String address,
+    required String pricingStructure,
+  }) async {
+    final cleanVendorId = vendorId.trim();
+    final vendor = await _client
+        .from('vendor')
+        .select('user_id')
+        .eq('vendor_id', cleanVendorId)
+        .maybeSingle();
+
+    await _client
+        .from('vendor')
+        .update({
+      'vendor_name': vendorName.trim(),
+      'service_category': serviceCategory.trim(),
+      'contact_person': contactPerson.trim(),
+      'vendor_phone': phone.trim(),
+      'vendor_email': email.trim(),
+      'vendor_address': address.trim(),
+      'pricing_structure': pricingStructure.trim(),
+    })
+        .eq('vendor_id', cleanVendorId);
+
+    final userId = vendor == null ? '' : _s((vendor as Map)['user_id']);
+    if (userId.isNotEmpty) {
+      try {
+        await _client
+            .from('app_user')
+            .update({
+          'user_name': vendorName.trim(),
+          'user_phone': phone.trim(),
+        })
+            .eq('user_id', userId);
+      } catch (_) {}
+    }
+  }
+
+  Future<bool> canVendorCompleteJob(String jobOrderId) async {
+    final costs = await fetchServiceCostsForJob(jobOrderId);
+    if (costs.isEmpty) return false;
+    return costs.every((row) => _s(row['payment_status']).toLowerCase() == 'paid');
+  }
 
   Future<List<Map<String, dynamic>>> fetchJobAttachments(String jobOrderId) async {
     final response = await _client
@@ -664,13 +842,16 @@ class JobOrderModuleService {
 
     if (lower.contains('service_job_attachment') ||
         lower.contains('service_job_activity') ||
+        lower.contains('service_job_payment') ||
         lower.contains('requested_by') ||
         lower.contains('assigned_at') ||
         lower.contains('closed_at') ||
         lower.contains('job_order_files')) {
+      if (lower.contains('service_job_payment')) {
+        return 'The service job payment table is missing in Supabase. Run the SQL in supabase/service_job_payment_patch.sql, then try again.\n\n$message';
+      }
       return 'Your Chapter 4 Job Order module is not fully added in Supabase yet. Run the SQL in supabase/job_order_chapter4_patch.sql, then try again.\n\n$message';
     }
-
     if (lower.contains('storage') || lower.contains('bucket')) {
       return 'The Job Order attachment bucket is not ready in Supabase yet. Run the SQL in supabase/job_order_chapter4_patch.sql, then try again.\n\n$message';
     }

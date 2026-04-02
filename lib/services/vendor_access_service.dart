@@ -2,8 +2,11 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 enum VendorState {
   none,
+  pending,
+  rejected,
   active,
   inactive,
+  blacklisted,
   unknown,
 }
 
@@ -11,10 +14,12 @@ class VendorContext {
   const VendorContext({
     required this.state,
     this.vendorId,
+    this.remark,
   });
 
   final VendorState state;
   final String? vendorId;
+  final String? remark;
 
   bool get isVendor => state != VendorState.none;
 }
@@ -122,18 +127,25 @@ class VendorAccessService {
     }
 
     final rawStatus = (vendorRow['vendor_status'] ?? userStatus).toString();
+    final rawRemark = (vendorRow['vendor_reject_remark'] ?? '').toString().trim();
     return VendorContext(
       state: _parse(rawStatus),
       vendorId: (vendorRow['vendor_id'] ?? '').toString().trim(),
+      remark: rawRemark.isEmpty ? null : rawRemark,
     );
   }
 
   VendorState _parse(String raw) {
     final value = raw.trim().toLowerCase();
     if (value.isEmpty) return VendorState.active;
+    if (value == 'pending' || value.contains('pending')) return VendorState.pending;
+    if (value == 'rejected' || value.contains('reject')) return VendorState.rejected;
     if (value == 'active' || value == 'approved') return VendorState.active;
     if (value == 'inactive' || value == 'disabled' || value.contains('inactive')) {
       return VendorState.inactive;
+    }
+    if (value == 'blacklisted' || value.contains('blacklist') || value == 'banned') {
+      return VendorState.blacklisted;
     }
     return VendorState.unknown;
   }

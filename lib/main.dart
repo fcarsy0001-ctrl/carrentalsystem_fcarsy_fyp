@@ -427,7 +427,10 @@ class _RoleGate extends StatelessWidget {
         return _GateResult.vendorPending();
       }
       if (vendorState == 'inactive') {
-        return _GateResult.disabled('Your vendor account has been deactivated. Please contact admin.');
+        return _GateResult.disabled('Your vendor account is inactive. Complete or clear assigned job orders first, then contact admin to reactivate it.');
+      }
+      if (vendorState == 'blacklisted') {
+        return _GateResult.disabled('Your vendor account has been blacklisted. Please contact admin.');
       }
       if (vendorState == 'rejected') {
         return _GateResult.vendorRejected(_vendorRemark(vendor));
@@ -442,7 +445,10 @@ class _RoleGate extends StatelessWidget {
     if (vendor2.isVendor) {
       final vendorState = _vendorStateName(vendor2);
       if (vendorState == 'inactive') {
-        return _GateResult.disabled('Your vendor account has been deactivated. Please contact admin.');
+        return _GateResult.disabled('Your vendor account is inactive. Complete or clear assigned job orders first, then contact admin to reactivate it.');
+      }
+      if (vendorState == 'blacklisted') {
+        return _GateResult.disabled('Your vendor account has been blacklisted. Please contact admin.');
       }
       if (vendorState == 'rejected') {
         return _GateResult.vendorRejected(_vendorRemark(vendor2));

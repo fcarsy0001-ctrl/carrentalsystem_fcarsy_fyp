@@ -1,6 +1,9 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../admin/widgets/admin_ui.dart';
+import '../payments/service_job_payment_history_page.dart';
 import '../services/fleet_admin_service.dart';
 import '../services/job_order_module_service.dart';
 
@@ -31,53 +34,10 @@ class _VendorServiceCostPageState extends State<VendorServiceCostPage> {
 
   String _read(dynamic value) => value == null ? '' : value.toString().trim();
 
-  Future<Map<String, dynamic>?> _resolveVendor() async {
-    final user = _supa.auth.currentUser;
-    if (user == null) return null;
 
-    final requestedId = _read(widget.vendorId);
-    if (requestedId.isNotEmpty) {
-      try {
-        final row = await _supa
-            .from('vendor')
-            .select('*')
-            .eq('vendor_id', requestedId)
-            .limit(1)
-            .maybeSingle();
-        if (row != null) return Map<String, dynamic>.from(row as Map);
-      } catch (_) {}
-    }
-
-    try {
-      final row = await _supa
-          .from('vendor')
-          .select('*')
-          .eq('auth_uid', user.id)
-          .order('vendor_id', ascending: false)
-          .limit(1)
-          .maybeSingle();
-      if (row != null) return Map<String, dynamic>.from(row as Map);
-    } catch (_) {}
-
-    final email = _read(user.email).toLowerCase();
-    if (email.isNotEmpty) {
-      try {
-        final row = await _supa
-            .from('vendor')
-            .select('*')
-            .eq('vendor_email', email)
-            .order('vendor_id', ascending: false)
-            .limit(1)
-            .maybeSingle();
-        if (row != null) return Map<String, dynamic>.from(row as Map);
-      } catch (_) {}
-    }
-
-    return null;
-  }
 
   Future<_VendorCostBundle> _load() async {
-    final vendor = await _resolveVendor();
+    final vendor = await _jobService.resolveCurrentVendor(requestedVendorId: widget.vendorId);
     if (vendor == null) {
       throw Exception('Vendor profile not found. Please contact admin to verify your vendor account link.');
     }
@@ -88,6 +48,13 @@ class _VendorServiceCostPageState extends State<VendorServiceCostPage> {
     final vehicles = await _jobService.fetchVehicles();
     final vehicleMap = _jobService.indexBy(vehicles, 'vehicle_id');
     final jobMap = _jobService.indexBy(jobs, 'job_order_id');
+    final payments = await _jobService.fetchServicePayments(vendorId: vendorId);
+    final paymentsByCost = <String, List<Map<String, dynamic>>>{};
+    for (final payment in payments) {
+      final serviceCostId = _read(payment['service_cost_id']);
+      if (serviceCostId.isEmpty) continue;
+      paymentsByCost.putIfAbsent(serviceCostId, () => <Map<String, dynamic>>[]).add(payment);
+    }
 
     return _VendorCostBundle(
       vendor: vendor,
@@ -95,6 +62,7 @@ class _VendorServiceCostPageState extends State<VendorServiceCostPage> {
       costs: costs,
       vehicleMap: vehicleMap,
       jobMap: jobMap,
+      paymentsByCost: paymentsByCost,
     );
   }
 
@@ -105,12 +73,54 @@ class _VendorServiceCostPageState extends State<VendorServiceCostPage> {
     await _future;
   }
 
+
+  List<Map<String, dynamic>> _quotableJobOrders(
+      _VendorCostBundle bundle, {
+        String? keepJobOrderId,
+      }) {
+    final keepId = _read(keepJobOrderId);
+    final quotedJobIds = bundle.costs.map((row) => _read(row['job_order_id'])).where((id) => id.isNotEmpty).toSet();
+    return bundle.jobs.where((job) {
+      final jobId = _read(job['job_order_id']);
+      if (jobId.isEmpty) return false;
+      if (keepId.isNotEmpty && jobId == keepId) return true;
+      final status = _read(job['status']).toLowerCase();
+      if (status == 'completed') return false;
+      return !quotedJobIds.contains(jobId);
+    }).toList();
+  }
+
   Future<void> _openUpsert(_VendorCostBundle bundle, {Map<String, dynamic>? initial, String? initialJobOrderId}) async {
+    final currentJobOrderId = initial == null ? _read(initialJobOrderId) : _read(initial['job_order_id']);
+    final jobOrders = _quotableJobOrders(bundle, keepJobOrderId: currentJobOrderId);
+
+    if (initial != null) {
+      final relatedJob = bundle.jobMap[_read(initial['job_order_id'])];
+      final relatedStatus = _read(relatedJob?['status']);
+      if (relatedStatus == 'Completed') {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Completed job orders are locked and cannot be priced again.')),
+        );
+        return;
+      }
+      if (_read(initial['payment_status']).toLowerCase() == 'paid') {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('A paid service cost is locked and can no longer be edited by the vendor.')),
+        );
+        return;
+      }
+    } else if (jobOrders.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Every assigned job already has a service price or is completed.')),
+      );
+      return;
+    }
+
     final saved = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
         builder: (_) => _VendorServiceCostFormPage(
           service: _adminService,
-          jobOrders: bundle.jobs,
+          jobOrders: jobOrders,
           vendor: bundle.vendor,
           initial: initial,
           initialJobOrderId: initialJobOrderId,
@@ -120,6 +130,21 @@ class _VendorServiceCostPageState extends State<VendorServiceCostPage> {
     if (saved == true) {
       await _refresh();
     }
+  }
+  Future<void> _openHistory(String serviceCostId, String jobOrderId) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ServiceJobPaymentHistoryPage(
+          service: _jobService,
+          title: 'Cost Payment History',
+          vendorId: widget.vendorId,
+          jobOrderId: jobOrderId,
+          serviceCostId: serviceCostId,
+        ),
+      ),
+    );
+    if (!mounted) return;
+    await _refresh();
   }
 
   @override
@@ -155,6 +180,7 @@ class _VendorServiceCostPageState extends State<VendorServiceCostPage> {
             return const Center(child: Text('No vendor cost data found.'));
           }
 
+          final quotableJobs = _quotableJobOrders(bundle);
           return RefreshIndicator(
             onRefresh: _refresh,
             child: ListView(
@@ -166,26 +192,26 @@ class _VendorServiceCostPageState extends State<VendorServiceCostPage> {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  'Submit labour, parts, invoice, and cost notes for the job orders assigned to your team.',
+                  'Set labour, parts, misc, tax, and invoice details for assigned job orders. The leaser will review and pay these service costs from their side.',
                   style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
                 ),
                 const SizedBox(height: 16),
                 Row(
                   children: [
                     FilledButton.icon(
-                      onPressed: bundle.jobs.isEmpty
+                      onPressed: quotableJobs.isEmpty
                           ? null
                           : () => _openUpsert(
                         bundle,
                         initialJobOrderId: _read(widget.initialJobOrderId).isEmpty ? null : widget.initialJobOrderId,
                       ),
                       icon: const Icon(Icons.add),
-                      label: const Text('Add Cost'),
+                      label: const Text('Set Price'),
                     ),
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
-                        '${bundle.costs.length} cost record${bundle.costs.length == 1 ? '' : 's'}',
+                        '${bundle.costs.length} quote${bundle.costs.length == 1 ? '' : 's'}',
                         textAlign: TextAlign.right,
                         style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
                       ),
@@ -195,11 +221,11 @@ class _VendorServiceCostPageState extends State<VendorServiceCostPage> {
                 const SizedBox(height: 16),
                 if (bundle.jobs.isEmpty)
                   const _VendorCostEmptyCard(
-                    message: 'No assigned job orders yet. Once a leaser assigns a job order to your vendor account, you can submit the service cost here.',
+                    message: 'No assigned job orders yet. Once a leaser assigns a job order to your vendor account, you can set the service cost here.',
                   )
-                else if (bundle.costs.isEmpty)
+                else if (bundle.costs.isEmpty && quotableJobs.isEmpty)
                   const _VendorCostEmptyCard(
-                    message: 'No service cost submitted yet. Add the labour, parts, tax, invoice, and cost notes for your assigned jobs here.',
+                    message: 'All assigned job orders already have a service price or are completed.',
                   )
                 else
                   ...bundle.costs.map((cost) {
@@ -213,18 +239,17 @@ class _VendorServiceCostPageState extends State<VendorServiceCostPage> {
                     final tax = _money(cost['tax_cost']);
                     final invoiceRef = _read(cost['invoice_ref']);
                     final notes = _read(cost['notes']);
+                    final paymentStatus = _read(cost['payment_status']).isEmpty ? 'Pending' : _read(cost['payment_status']);
+                    final historyCount = bundle.paymentsByCost[costId]?.length ?? 0;
+                    final isPaid = paymentStatus.toLowerCase() == 'paid';
+                    final jobStatus = job == null ? '' : _read(job['status']);
+                    final isCompletedJob = jobStatus == 'Completed';
+                    final canEditQuote = !isPaid && !isCompletedJob;
                     return Padding(
                       padding: const EdgeInsets.only(bottom: 12),
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(18),
-                        onTap: () => _openUpsert(bundle, initial: cost),
-                        child: Container(
+                      child: AdminCard(
+                        child: Padding(
                           padding: const EdgeInsets.all(16),
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(18),
-                            border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
-                          ),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
@@ -236,29 +261,38 @@ class _VendorServiceCostPageState extends State<VendorServiceCostPage> {
                                       style: const TextStyle(fontWeight: FontWeight.w900),
                                     ),
                                   ),
-                                  _VendorPaymentChip(status: _read(cost['payment_status']).isEmpty ? 'Pending' : _read(cost['payment_status'])),
+                                  AdminStatusChip(status: paymentStatus),
                                 ],
                               ),
-                              const SizedBox(height: 8),
+                              const SizedBox(height: 10),
                               _VendorDetailRow(label: 'Job Order', value: job == null || _read(job['job_order_id']).isEmpty ? _read(cost['job_order_id']) : _read(job['job_order_id'])),
                               _VendorDetailRow(label: 'Vehicle', value: vehicleLabel.isEmpty ? '-' : vehicleLabel),
-                              _VendorDetailRow(label: 'Invoice', value: invoiceRef.isEmpty ? '-' : invoiceRef),
                               _VendorDetailRow(label: 'Service Date', value: _vendorDateText(cost['service_date'])),
                               _VendorDetailRow(label: 'Labour', value: labour),
                               _VendorDetailRow(label: 'Parts', value: parts),
                               _VendorDetailRow(label: 'Misc', value: misc),
                               _VendorDetailRow(label: 'Tax', value: tax),
+                              _VendorDetailRow(label: 'Invoice', value: invoiceRef.isEmpty ? '-' : invoiceRef),
                               if (notes.isNotEmpty)
                                 _VendorDetailRow(label: 'Notes', value: notes),
-                              _VendorDetailRow(label: 'Total Cost', value: _money(cost['total_cost'])),
+                              _VendorDetailRow(label: 'Total', value: _money(cost['total_cost'])),
+                              _VendorDetailRow(label: 'Payments', value: '$historyCount record${historyCount == 1 ? '' : 's'}'),
                               const SizedBox(height: 10),
-                              Align(
-                                alignment: Alignment.centerRight,
-                                child: OutlinedButton.icon(
-                                  onPressed: () => _openUpsert(bundle, initial: cost),
-                                  icon: const Icon(Icons.edit_outlined),
-                                  label: const Text('Edit Cost'),
-                                ),
+                              Wrap(
+                                spacing: 10,
+                                runSpacing: 10,
+                                children: [
+                                  OutlinedButton.icon(
+                                    onPressed: () => _openHistory(costId, _read(cost['job_order_id'])),
+                                    icon: const Icon(Icons.history_rounded),
+                                    label: const Text('Payment History'),
+                                  ),
+                                  OutlinedButton.icon(
+                                    onPressed: canEditQuote ? () => _openUpsert(bundle, initial: cost) : null,
+                                    icon: const Icon(Icons.edit_outlined),
+                                    label: const Text('Edit Quote'),
+                                  ),
+                                ],
                               ),
                             ],
                           ),
@@ -282,6 +316,7 @@ class _VendorCostBundle {
     required this.costs,
     required this.vehicleMap,
     required this.jobMap,
+    required this.paymentsByCost,
   });
 
   final Map<String, dynamic> vendor;
@@ -289,6 +324,7 @@ class _VendorCostBundle {
   final List<Map<String, dynamic>> costs;
   final Map<String, Map<String, dynamic>> vehicleMap;
   final Map<String, Map<String, dynamic>> jobMap;
+  final Map<String, List<Map<String, dynamic>>> paymentsByCost;
 }
 
 class _VendorServiceCostFormPage extends StatefulWidget {
@@ -320,11 +356,20 @@ class _VendorServiceCostFormPageState extends State<_VendorServiceCostFormPage> 
   final _notesController = TextEditingController();
 
   String? _jobOrderId;
-  String _paymentStatus = 'Pending';
   DateTime? _serviceDate;
   bool _saving = false;
 
   String _read(dynamic value) => value == null ? '' : value.toString().trim();
+
+  String? _costValidator(String? value) {
+    final text = (value ?? '').trim();
+    if (text.isEmpty) return 'Required';
+    final number = double.tryParse(text);
+    if (number == null) return 'Numbers only';
+    if (number < 0) return 'Cannot be negative';
+    return null;
+  }
+
 
   @override
   void initState() {
@@ -338,7 +383,6 @@ class _VendorServiceCostFormPageState extends State<_VendorServiceCostFormPage> 
       _taxController.text = (initial['tax_cost'] ?? 0).toString();
       _invoiceController.text = _read(initial['invoice_ref']);
       _notesController.text = _read(initial['notes']);
-      _paymentStatus = _read(initial['payment_status']).isEmpty ? 'Pending' : _read(initial['payment_status']);
       _serviceDate = _vendorParseDate(initial['service_date']);
     } else {
       final requested = _read(widget.initialJobOrderId);
@@ -360,10 +404,15 @@ class _VendorServiceCostFormPageState extends State<_VendorServiceCostFormPage> 
   }
 
   Future<void> _pickServiceDate() async {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final initialDate = _serviceDate != null && !_serviceDate!.isBefore(today)
+        ? _serviceDate!
+        : today;
     final picked = await showDatePicker(
       context: context,
-      initialDate: _serviceDate ?? DateTime.now(),
-      firstDate: DateTime(2024, 1, 1),
+      initialDate: initialDate,
+      firstDate: today,
       lastDate: DateTime(2035, 12, 31),
     );
     if (picked == null) return;
@@ -373,6 +422,22 @@ class _VendorServiceCostFormPageState extends State<_VendorServiceCostFormPage> 
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
     if ((_jobOrderId ?? '').trim().isEmpty) return;
+    if (_serviceDate == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please select the service date for this quote.')),
+      );
+      return;
+    }
+
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final selectedDate = DateTime(_serviceDate!.year, _serviceDate!.month, _serviceDate!.day);
+    if (selectedDate.isBefore(today)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Service date cannot be in the past.')),
+      );
+      return;
+    }
 
     setState(() => _saving = true);
     try {
@@ -385,13 +450,15 @@ class _VendorServiceCostFormPageState extends State<_VendorServiceCostFormPage> 
         miscCost: double.tryParse(_miscController.text.trim()) ?? 0,
         taxCost: double.tryParse(_taxController.text.trim()) ?? 0,
         invoiceRef: _invoiceController.text,
-        paymentStatus: _paymentStatus,
+        paymentStatus: widget.initial == null
+            ? 'Pending'
+            : (_read(widget.initial!['payment_status']).isEmpty ? 'Pending' : _read(widget.initial!['payment_status'])),
         serviceDate: _serviceDate,
         notes: _notesController.text,
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(widget.initial == null ? 'Service cost submitted' : 'Service cost updated')),
+        SnackBar(content: Text(widget.initial == null ? 'Service cost submitted to leaser.' : 'Service cost updated.')),
       );
       Navigator.of(context).pop(true);
     } catch (error) {
@@ -407,7 +474,7 @@ class _VendorServiceCostFormPageState extends State<_VendorServiceCostFormPage> 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(widget.initial == null ? 'Add Service Cost' : 'Edit Service Cost')),
+      appBar: AppBar(title: Text(widget.initial == null ? 'Set Service Price' : 'Edit Service Price')),
       body: Form(
         key: _formKey,
         child: ListView(
@@ -439,8 +506,9 @@ class _VendorServiceCostFormPageState extends State<_VendorServiceCostFormPage> 
                   child: TextFormField(
                     controller: _labourController,
                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))],
                     decoration: const InputDecoration(labelText: 'Labour Cost'),
-                    validator: (value) => (value == null || value.trim().isEmpty) ? 'Required' : null,
+                    validator: _costValidator,
                   ),
                 ),
                 const SizedBox(width: 10),
@@ -448,8 +516,9 @@ class _VendorServiceCostFormPageState extends State<_VendorServiceCostFormPage> 
                   child: TextFormField(
                     controller: _partsController,
                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))],
                     decoration: const InputDecoration(labelText: 'Parts Cost'),
-                    validator: (value) => (value == null || value.trim().isEmpty) ? 'Required' : null,
+                    validator: _costValidator,
                   ),
                 ),
               ],
@@ -461,8 +530,9 @@ class _VendorServiceCostFormPageState extends State<_VendorServiceCostFormPage> 
                   child: TextFormField(
                     controller: _miscController,
                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))],
                     decoration: const InputDecoration(labelText: 'Misc Cost'),
-                    validator: (value) => (value == null || value.trim().isEmpty) ? 'Required' : null,
+                    validator: _costValidator,
                   ),
                 ),
                 const SizedBox(width: 10),
@@ -470,8 +540,9 @@ class _VendorServiceCostFormPageState extends State<_VendorServiceCostFormPage> 
                   child: TextFormField(
                     controller: _taxController,
                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))],
                     decoration: const InputDecoration(labelText: 'Tax Cost'),
-                    validator: (value) => (value == null || value.trim().isEmpty) ? 'Required' : null,
+                    validator: _costValidator,
                   ),
                 ),
               ],
@@ -503,17 +574,6 @@ class _VendorServiceCostFormPageState extends State<_VendorServiceCostFormPage> 
               validator: (value) => (value == null || value.trim().isEmpty) ? 'Required' : null,
             ),
             const SizedBox(height: 10),
-            DropdownButtonFormField<String>(
-              value: _paymentStatus,
-              decoration: const InputDecoration(labelText: 'Payment Status'),
-              items: const [
-                DropdownMenuItem(value: 'Pending', child: Text('Pending')),
-                DropdownMenuItem(value: 'Paid', child: Text('Paid')),
-                DropdownMenuItem(value: 'Disputed', child: Text('Disputed')),
-              ],
-              onChanged: (value) => setState(() => _paymentStatus = value ?? 'Pending'),
-            ),
-            const SizedBox(height: 10),
             TextFormField(
               controller: _notesController,
               maxLines: 3,
@@ -524,7 +584,7 @@ class _VendorServiceCostFormPageState extends State<_VendorServiceCostFormPage> 
             FilledButton.icon(
               onPressed: _saving ? null : _save,
               icon: const Icon(Icons.save_outlined),
-              label: Text(widget.initial == null ? 'Submit Service Cost' : 'Save changes'),
+              label: Text(widget.initial == null ? 'Send Price to Leaser' : 'Save changes'),
             ),
           ],
         ),
@@ -540,14 +600,11 @@ class _VendorCostEmptyCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+    return AdminCard(
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Text(message),
       ),
-      child: Text(message),
     );
   }
 }
@@ -584,33 +641,6 @@ class _VendorDetailRow extends StatelessWidget {
   }
 }
 
-class _VendorPaymentChip extends StatelessWidget {
-  const _VendorPaymentChip({required this.status});
-
-  final String status;
-
-  @override
-  Widget build(BuildContext context) {
-    final normalized = status.trim().toLowerCase();
-    Color tint = Colors.orange;
-    if (normalized == 'paid') tint = Colors.green;
-    if (normalized == 'disputed') tint = Colors.redAccent;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-      decoration: BoxDecoration(
-        color: tint.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: tint.withValues(alpha: 0.2)),
-      ),
-      child: Text(
-        status,
-        style: TextStyle(color: tint, fontWeight: FontWeight.w700),
-      ),
-    );
-  }
-}
-
 String _money(dynamic value) {
   final number = value is num ? value.toDouble() : double.tryParse(value.toString()) ?? 0;
   return 'RM ${number.toStringAsFixed(2)}';
@@ -630,6 +660,3 @@ String _vendorDateText(dynamic raw) {
   final year = value.year.toString();
   return '$day/$month/$year';
 }
-
-
-

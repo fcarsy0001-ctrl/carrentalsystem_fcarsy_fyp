@@ -557,17 +557,6 @@ class _MaintenanceScheduleAdminPageState extends State<MaintenanceScheduleAdminP
                 icon: const Icon(Icons.refresh_rounded),
               ),
             ],
-            primaryActions: [
-              FilledButton.icon(
-                onPressed: () async {
-                  final bundle = await _future;
-                  if (!mounted) return;
-                  await _openUpsert(bundle);
-                },
-                icon: const Icon(Icons.add),
-                label: const Text('Create schedule'),
-              ),
-            ],
           ),
           const Divider(height: 1),
           Expanded(child: body),
@@ -587,15 +576,6 @@ class _MaintenanceScheduleAdminPageState extends State<MaintenanceScheduleAdminP
         ],
       ),
       body: body,
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () async {
-          final bundle = await _future;
-          if (!mounted) return;
-          await _openUpsert(bundle);
-        },
-        icon: const Icon(Icons.add),
-        label: const Text('Create schedule'),
-      ),
     );
   }
 }

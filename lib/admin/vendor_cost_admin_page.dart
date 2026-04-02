@@ -1,7 +1,9 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../payments/service_job_payment_history_page.dart';
 import '../services/fleet_admin_service.dart';
+import '../services/job_order_module_service.dart';
 import 'widgets/admin_ui.dart';
 
 class VendorCostAdminPage extends StatelessWidget {
@@ -173,7 +175,7 @@ class _VendorTabState extends State<_VendorTab> {
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
                   children: [
                     if (managedRows.isEmpty)
-                      const _VendorEmptyCard(message: 'No active vendors yet. Approve vendor applications first, then manage them here.')
+                      const _VendorEmptyCard(message: 'No managed vendors yet. Approve vendor applications first, then manage them here.')
                     else
                       ...managedRows.map((vendor) {
                         final vendorId = (vendor['vendor_id'] ?? '').toString();
@@ -255,12 +257,14 @@ class _ServiceCostTabState extends State<_ServiceCostTab> {
   SupabaseClient get _supa => Supabase.instance.client;
 
   late final FleetAdminService _service;
+  late final JobOrderModuleService _jobService;
   late Future<_ServiceCostBundle> _future;
 
   @override
   void initState() {
     super.initState();
     _service = FleetAdminService(_supa);
+    _jobService = JobOrderModuleService(_supa);
     _future = _load();
   }
 
@@ -296,6 +300,21 @@ class _ServiceCostTabState extends State<_ServiceCostTab> {
     if (saved == true) {
       await _refresh();
     }
+  }
+
+  Future<void> _openHistory(String serviceCostId, String jobOrderId) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ServiceJobPaymentHistoryPage(
+          service: _jobService,
+          title: 'Service Payment History',
+          jobOrderId: jobOrderId,
+          serviceCostId: serviceCostId,
+        ),
+      ),
+    );
+    if (!mounted) return;
+    await _refresh();
   }
 
   Future<void> _delete(String serviceCostId) async {
@@ -359,10 +378,11 @@ class _ServiceCostTabState extends State<_ServiceCostTab> {
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
               child: Row(
                 children: [
-                  FilledButton.icon(
-                    onPressed: bundle.jobs.isEmpty ? null : () => _openUpsert(bundle),
-                    icon: const Icon(Icons.add),
-                    label: const Text('Add cost'),
+                  Expanded(
+                    child: Text(
+                      'Vendor sets the service quote. Leaser pays it from Service Jobs, and admin can review or edit the quote when needed.',
+                      style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+                    ),
                   ),
                   const SizedBox(width: 10),
                   IconButton(
@@ -385,7 +405,7 @@ class _ServiceCostTabState extends State<_ServiceCostTab> {
                       )
                     else if (bundle.costs.isEmpty)
                       const _VendorEmptyCard(
-                        message: 'No service costs yet. Add the labour, parts, and tax details for completed job orders here.',
+                        message: 'No vendor quote submitted yet. The vendor will set the price after a leaser assigns a job order.',
                       )
                     else
                       ...bundle.costs.map((cost) {
@@ -654,6 +674,7 @@ class _VendorFormPageState extends State<_VendorFormPage> {
               items: const [
                 DropdownMenuItem(value: 'Active', child: Text('Active')),
                 DropdownMenuItem(value: 'Inactive', child: Text('Inactive')),
+                DropdownMenuItem(value: 'Blacklisted', child: Text('Blacklisted')),
               ],
               onChanged: (value) => setState(() => _status = value ?? 'Active'),
             ),
@@ -978,6 +999,10 @@ String _tabDateText(dynamic raw) {
   if (value == null) return '-';
   return '${value.day}/${value.month}/${value.year}';
 }
+
+
+
+
 
 
 

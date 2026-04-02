@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../payments/service_job_cost_records_page.dart';
 import '../services/job_order_module_service.dart';
 import 'widgets/admin_ui.dart';
 
@@ -1323,6 +1324,20 @@ class _JobOrderDetailsPageState extends State<_JobOrderDetailsPage> {
     await _refresh();
   }
 
+
+  Future<void> _openCostRecords(_JobOrderDetailBundle bundle) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ServiceJobCostRecordsPage(
+          service: widget.service,
+          jobOrderId: widget.jobOrderId,
+          leaserId: widget.leaserId,
+        ),
+      ),
+    );
+    if (!mounted) return;
+    await _refresh();
+  }
   Future<void> _showCostDialog(_JobOrderDetailBundle bundle) async {
     final costs = bundle.costs;
     await showModalBottomSheet<void>(
@@ -1621,7 +1636,7 @@ class _JobOrderDetailsPageState extends State<_JobOrderDetailsPage> {
                         const SizedBox(width: 10),
                         Expanded(
                           child: OutlinedButton.icon(
-                            onPressed: () => _showCostDialog(bundle),
+                            onPressed: () => _openCostRecords(bundle),
                             icon: const Icon(Icons.receipt_long_outlined),
                             label: const Text('View Cost'),
                           ),
@@ -2548,6 +2563,8 @@ String _fileSizeLabel(int bytes) {
   final mb = kb / 1024;
   return '${mb.toStringAsFixed(1)} MB';
 }
+
+
 
 
 

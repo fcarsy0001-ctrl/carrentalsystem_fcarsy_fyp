@@ -7,6 +7,7 @@ import '../core/widgets/simple_charts.dart';
 import '../admin/service_job_orders_page.dart';
 import '../admin/vehicle_location_dashboard_page.dart';
 import '../admin/vehicle_onboarding_page.dart';
+import '../payments/service_job_payment_history_page.dart';
 import 'reports_leaser_page.dart';
 import 'vehicle_onboarding_status_page.dart';
 
@@ -160,6 +161,18 @@ class _LeaserDashboardPageState extends State<LeaserDashboardPage> {
                     ),
                     ElevatedButton.icon(
                       onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => ServiceJobPaymentHistoryPage(
+                            title: 'Service Payment History',
+                            leaserId: widget.leaserId,
+                          ),
+                        ),
+                      ),
+                      icon: const Icon(Icons.receipt_long_outlined),
+                      label: const Text('Service Payments'),
+                    ),
+                    ElevatedButton.icon(
+                      onPressed: () => Navigator.of(context).push(
                         MaterialPageRoute(builder: (_) => VehicleOnboardingStatusPage(leaserId: widget.leaserId)),
                       ),
                       icon: const Icon(Icons.track_changes_outlined),
@@ -280,6 +293,8 @@ class _Section extends StatelessWidget {
     );
   }
 }
+
+
 
 
 

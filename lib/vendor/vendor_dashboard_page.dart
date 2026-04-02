@@ -1,7 +1,10 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../payments/service_job_payment_history_page.dart';
 import '../services/job_order_module_service.dart';
+import 'vendor_job_orders_page.dart';
+import 'vendor_profile_edit_page.dart';
 import 'vendor_service_cost_page.dart';
 
 class VendorDashboardPage extends StatefulWidget {
@@ -26,67 +29,33 @@ class _VendorDashboardPageState extends State<VendorDashboardPage> {
     _future = _load();
   }
 
+  String _read(dynamic value) => value == null ? '' : value.toString().trim();
+
   Future<_VendorDashboardData> _load() async {
-    final vendor = await _resolveVendor();
+    final vendor = await _jobService.resolveCurrentVendor(
+      requestedVendorId: widget.vendorId,
+    );
     if (vendor == null) {
-      throw Exception('Vendor profile not found. Run the vendor SQL patch and make sure this account is linked to a vendor row.');
+      throw Exception(
+        'Vendor profile not found. Run the vendor SQL patch and make sure this account is linked to a vendor row.',
+      );
     }
 
     final vendorId = _read(vendor['vendor_id']);
     final jobs = await _jobService.fetchJobOrders(vendorId: vendorId);
-    final vehicles = await _jobService.fetchVehicles();
-    final vehicleMap = _jobService.indexBy(vehicles, 'vehicle_id');
+    final costs = await _jobService.fetchServiceCosts(
+      vendorId: vendorId,
+      jobOrderIds: jobs
+          .map((row) => _read(row['job_order_id']))
+          .where((id) => id.isNotEmpty)
+          .toList(),
+    );
 
     return _VendorDashboardData(
       vendor: vendor,
       jobs: jobs,
-      vehicleMap: vehicleMap,
+      costs: costs,
     );
-  }
-
-  Future<Map<String, dynamic>?> _resolveVendor() async {
-    final user = _supa.auth.currentUser;
-    if (user == null) return null;
-
-    final requestedId = _read(widget.vendorId);
-    if (requestedId.isNotEmpty) {
-      try {
-        final row = await _supa
-            .from('vendor')
-            .select('*')
-            .eq('vendor_id', requestedId)
-            .limit(1)
-            .maybeSingle();
-        if (row != null) return Map<String, dynamic>.from(row as Map);
-      } catch (_) {}
-    }
-
-    try {
-      final row = await _supa
-          .from('vendor')
-          .select('*')
-          .eq('auth_uid', user.id)
-          .order('vendor_id', ascending: false)
-          .limit(1)
-          .maybeSingle();
-      if (row != null) return Map<String, dynamic>.from(row as Map);
-    } catch (_) {}
-
-    final email = _read(user.email).toLowerCase();
-    if (email.isNotEmpty) {
-      try {
-        final row = await _supa
-            .from('vendor')
-            .select('*')
-            .eq('vendor_email', email)
-            .order('vendor_id', ascending: false)
-            .limit(1)
-            .maybeSingle();
-        if (row != null) return Map<String, dynamic>.from(row as Map);
-      } catch (_) {}
-    }
-
-    return null;
   }
 
   Future<void> _refresh() async {
@@ -96,12 +65,23 @@ class _VendorDashboardPageState extends State<VendorDashboardPage> {
     await _future;
   }
 
-  Future<void> _openServiceCost(String vendorId, {String? initialJobOrderId}) async {
+  Future<void> _openServiceCost(String vendorId) async {
     await Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => VendorServiceCostPage(
+        builder: (_) => VendorServiceCostPage(vendorId: vendorId),
+      ),
+    );
+    if (!mounted) return;
+    await _refresh();
+  }
+
+  Future<void> _openPaymentHistory(String vendorId) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ServiceJobPaymentHistoryPage(
+          service: _jobService,
+          title: 'Vendor Payment History',
           vendorId: vendorId,
-          initialJobOrderId: initialJobOrderId,
         ),
       ),
     );
@@ -109,7 +89,26 @@ class _VendorDashboardPageState extends State<VendorDashboardPage> {
     await _refresh();
   }
 
-  String _read(dynamic value) => value == null ? '' : value.toString().trim();
+  Future<void> _openJobOrders(String vendorId) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => VendorJobOrdersPage(vendorId: vendorId),
+      ),
+    );
+    if (!mounted) return;
+    await _refresh();
+  }
+
+  Future<void> _openProfileEditor(Map<String, dynamic> vendor) async {
+    final saved = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => VendorProfileEditPage(service: _jobService, vendor: vendor),
+      ),
+    );
+    if (saved == true) {
+      await _refresh();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -134,9 +133,21 @@ class _VendorDashboardPageState extends State<VendorDashboardPage> {
         }
 
         final total = data.jobs.length;
-        final pending = data.jobs.where((row) => _read(row['status']) == 'Pending').length;
-        final active = data.jobs.where((row) => _read(row['status']) == 'In Progress').length;
-        final completed = data.jobs.where((row) => _read(row['status']) == 'Completed').length;
+        final pending =
+            data.jobs.where((row) => _read(row['status']) == 'Pending').length;
+        final active = data.jobs
+            .where((row) => _read(row['status']) == 'In Progress')
+            .length;
+        final completed = data.jobs
+            .where((row) => _read(row['status']) == 'Completed')
+            .length;
+        final pendingQuotes = data.costs
+            .where((row) => _read(row['payment_status']).toLowerCase() != 'paid')
+            .length;
+        final vendorId = _read(data.vendor['vendor_id']);
+        final vendorStatus = _read(data.vendor['vendor_status']).isEmpty
+            ? 'Active'
+            : _read(data.vendor['vendor_status']);
 
         return RefreshIndicator(
           onRefresh: _refresh,
@@ -145,12 +156,17 @@ class _VendorDashboardPageState extends State<VendorDashboardPage> {
             children: [
               Text(
                 'Vendor Dashboard',
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w900),
+                style: Theme.of(context)
+                    .textTheme
+                    .headlineSmall
+                    ?.copyWith(fontWeight: FontWeight.w900),
               ),
               const SizedBox(height: 4),
               Text(
-                'Review your service profile and the job orders assigned to your team.',
-                style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+                'Review your service profile, manage assigned job orders, send prices to leasers, and track service payments.',
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
               ),
               const SizedBox(height: 16),
               Wrap(
@@ -165,16 +181,43 @@ class _VendorDashboardPageState extends State<VendorDashboardPage> {
               ),
               const SizedBox(height: 16),
               _SectionCard(
+                title: 'Quick Actions',
+                child: Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: [
+                    FilledButton.icon(
+                      onPressed: () => _openJobOrders(vendorId),
+                      icon: const Icon(Icons.build_circle_outlined),
+                      label: const Text('Open Job Orders'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () => _openPaymentHistory(vendorId),
+                      icon: const Icon(Icons.history_rounded),
+                      label: const Text('Payment History'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () => _openProfileEditor(data.vendor),
+                      icon: const Icon(Icons.edit_outlined),
+                      label: const Text('Edit Profile'),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              _SectionCard(
                 title: 'Service Cost',
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('Submit labour, parts, invoice, and cost notes for the job orders assigned to your vendor account.'),
+                    Text(
+                      'You currently have ${data.costs.length} vendor quote${data.costs.length == 1 ? '' : 's'} and $pendingQuotes awaiting leaser payment.',
+                    ),
                     const SizedBox(height: 12),
                     FilledButton.icon(
-                      onPressed: () => _openServiceCost(_read(data.vendor['vendor_id'])),
+                      onPressed: () => _openServiceCost(vendorId),
                       icon: const Icon(Icons.payments_outlined),
-                      label: const Text('Open Service Cost'),
+                      label: const Text('Manage Service Cost'),
                     ),
                   ],
                 ),
@@ -185,78 +228,50 @@ class _VendorDashboardPageState extends State<VendorDashboardPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _InfoRow(label: 'Vendor', value: _read(data.vendor['vendor_name']).isEmpty ? '-' : _read(data.vendor['vendor_name'])),
-                    _InfoRow(label: 'Service Type', value: _read(data.vendor['service_category']).isEmpty ? '-' : _read(data.vendor['service_category'])),
-                    _InfoRow(label: 'Contact Person', value: _read(data.vendor['contact_person']).isEmpty ? '-' : _read(data.vendor['contact_person'])),
-                    _InfoRow(label: 'Phone', value: _read(data.vendor['vendor_phone']).isEmpty ? '-' : _read(data.vendor['vendor_phone'])),
-                    _InfoRow(label: 'Email', value: _read(data.vendor['vendor_email']).isEmpty ? '-' : _read(data.vendor['vendor_email'])),
-                    _InfoRow(label: 'Pricing Structure', value: _read(data.vendor['pricing_structure']).isEmpty ? '-' : _read(data.vendor['pricing_structure'])),
+                    _InfoRow(
+                      label: 'Vendor',
+                      value: _read(data.vendor['vendor_name']).isEmpty
+                          ? '-'
+                          : _read(data.vendor['vendor_name']),
+                    ),
+                    _InfoRow(
+                      label: 'Service Type',
+                      value: _read(data.vendor['service_category']).isEmpty
+                          ? '-'
+                          : _read(data.vendor['service_category']),
+                    ),
+                    _InfoRow(
+                      label: 'Contact Person',
+                      value: _read(data.vendor['contact_person']).isEmpty
+                          ? '-'
+                          : _read(data.vendor['contact_person']),
+                    ),
+                    _InfoRow(
+                      label: 'Phone',
+                      value: _read(data.vendor['vendor_phone']).isEmpty
+                          ? '-'
+                          : _read(data.vendor['vendor_phone']),
+                    ),
+                    _InfoRow(
+                      label: 'Email',
+                      value: _read(data.vendor['vendor_email']).isEmpty
+                          ? '-'
+                          : _read(data.vendor['vendor_email']),
+                    ),
+                    _InfoRow(
+                      label: 'Pricing Structure',
+                      value: _read(data.vendor['pricing_structure']).isEmpty
+                          ? '-'
+                          : _read(data.vendor['pricing_structure']),
+                    ),
                     const SizedBox(height: 10),
-                    _StatusChip(status: _read(data.vendor['vendor_status']).isEmpty ? 'Active' : _read(data.vendor['vendor_status'])),
+                    Row(
+                      children: [
+                        Expanded(child: _StatusChip(status: vendorStatus)),
+                      ],
+                    ),
                   ],
                 ),
-              ),
-              const SizedBox(height: 16),
-              _SectionCard(
-                title: 'Recent Assigned Jobs',
-                child: data.jobs.isEmpty
-                    ? const Text('No job orders have been assigned to this vendor yet.')
-                    : Column(
-                        children: data.jobs.take(6).map((job) {
-                          final vehicle = data.vehicleMap[_read(job['vehicle_id'])];
-                          final vehicleLabel = vehicle == null
-                              ? _read(job['vehicle_id'])
-                              : _jobService.vehicleLabel(vehicle);
-                          final jobType = _read(job['job_type']).isEmpty ? 'General Service' : _read(job['job_type']);
-                          final priority = _read(job['priority']).isEmpty ? 'Medium' : _read(job['priority']);
-                          return Padding(
-                            padding: const EdgeInsets.only(bottom: 10),
-                            child: Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.all(14),
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(14),
-                                border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
-                              ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    children: [
-                                      Expanded(
-                                        child: Text(
-                                          _read(job['job_order_id']),
-                                          style: const TextStyle(fontWeight: FontWeight.w900),
-                                        ),
-                                      ),
-                                      _StatusChip(status: _read(job['status']).isEmpty ? 'Pending' : _read(job['status'])),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 6),
-                                  Text(vehicleLabel.isEmpty ? 'Unknown vehicle' : vehicleLabel),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    '$jobType | $priority',
-                                    style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
-                                  ),
-                                  const SizedBox(height: 10),
-                                  Align(
-                                    alignment: Alignment.centerRight,
-                                    child: OutlinedButton.icon(
-                                      onPressed: () => _openServiceCost(
-                                        _read(data.vendor['vendor_id']),
-                                        initialJobOrderId: _read(job['job_order_id']),
-                                      ),
-                                      icon: const Icon(Icons.add_card_rounded),
-                                      label: const Text('Add Cost'),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          );
-                        }).toList(),
-                      ),
               ),
             ],
           ),
@@ -270,12 +285,12 @@ class _VendorDashboardData {
   const _VendorDashboardData({
     required this.vendor,
     required this.jobs,
-    required this.vehicleMap,
+    required this.costs,
   });
 
   final Map<String, dynamic> vendor;
   final List<Map<String, dynamic>> jobs;
-  final Map<String, Map<String, dynamic>> vehicleMap;
+  final List<Map<String, dynamic>> costs;
 }
 
 class _MetricCard extends StatelessWidget {
@@ -302,9 +317,15 @@ class _MetricCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label, style: TextStyle(color: tint, fontWeight: FontWeight.w800)),
+          Text(
+            label,
+            style: TextStyle(color: tint, fontWeight: FontWeight.w800),
+          ),
           const SizedBox(height: 6),
-          Text(value, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w900)),
+          Text(
+            value,
+            style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w900),
+          ),
         ],
       ),
     );
@@ -324,12 +345,17 @@ class _SectionCard extends StatelessWidget {
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(18),
         color: Colors.white,
-        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+        border: Border.all(
+          color: Theme.of(context).colorScheme.outlineVariant,
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+          Text(
+            title,
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
+          ),
           const SizedBox(height: 12),
           child,
         ],
@@ -355,7 +381,10 @@ class _InfoRow extends StatelessWidget {
             width: 120,
             child: Text(
               label,
-              style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontWeight: FontWeight.w700),
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                fontWeight: FontWeight.w700,
+              ),
             ),
           ),
           Expanded(child: Text(value)),
@@ -374,7 +403,9 @@ class _StatusChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final normalized = status.trim().toLowerCase();
     Color tint = Colors.grey;
-    if (normalized == 'active' || normalized == 'completed') tint = Colors.green;
+    if (normalized == 'active' || normalized == 'completed' || normalized == 'paid') {
+      tint = Colors.green;
+    }
     if (normalized == 'pending') tint = Colors.orange;
     if (normalized == 'in progress') tint = Colors.indigo;
     if (normalized == 'inactive') tint = Colors.redAccent;
@@ -393,8 +424,3 @@ class _StatusChip extends StatelessWidget {
     );
   }
 }
-
-
-
-
-

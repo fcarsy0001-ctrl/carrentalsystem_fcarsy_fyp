@@ -168,6 +168,35 @@ create table if not exists public.service_cost (
     return _rows(response);
   }
 
+  Future<List<Map<String, dynamic>>> fetchVendorAssignedJobOrders(String vendorId) async {
+    final cleanVendorId = vendorId.trim();
+    if (cleanVendorId.isEmpty) return const [];
+    final response = await _client
+        .from('service_job_order')
+        .select('job_order_id,status,vehicle_id,vendor_id')
+        .eq('vendor_id', cleanVendorId)
+        .order('created_at', ascending: false);
+    return _rows(response);
+  }
+
+  Future<void> _assertVendorCanBeInactive(String vendorId) async {
+    final jobs = await fetchVendorAssignedJobOrders(vendorId);
+    if (jobs.isEmpty) return;
+
+    final blockingJobs = jobs.where((job) => _s(job['status']).toLowerCase() != 'completed').toList();
+    if (blockingJobs.isEmpty) return;
+
+    final sampleIds = blockingJobs
+        .take(3)
+        .map((job) => _s(job['job_order_id']))
+        .where((id) => id.isNotEmpty)
+        .join(', ');
+    final suffix = sampleIds.isEmpty ? '' : ' Open job order(s): $sampleIds.';
+    throw Exception(
+      'This vendor still has assigned job orders. Change all assigned job orders to Completed, or remove the assignments, before setting the vendor to Inactive.$suffix',
+    );
+  }
+
   Future<void> upsertVendor({
     String? vendorId,
     required String vendorName,
@@ -181,6 +210,21 @@ create table if not exists public.service_cost (
     required String status,
   }) async {
     final id = _s(vendorId).isEmpty ? newVendorId() : _s(vendorId);
+    final nextStatus = status.trim();
+
+    if (_s(vendorId).isNotEmpty) {
+      final current = await _client
+          .from('vendor')
+          .select('vendor_status')
+          .eq('vendor_id', id)
+          .limit(1)
+          .maybeSingle();
+      final currentStatus = current == null ? '' : _s((current as Map)['vendor_status']).toLowerCase();
+      if (nextStatus.toLowerCase() == 'inactive' && currentStatus != 'inactive') {
+        await _assertVendorCanBeInactive(id);
+      }
+    }
+
     final payload = <String, dynamic>{
       'vendor_name': vendorName.trim(),
       'service_category': serviceCategory.trim(),
@@ -190,7 +234,7 @@ create table if not exists public.service_cost (
       'vendor_address': address.trim().isEmpty ? null : address.trim(),
       'pricing_structure': pricingStructure.trim().isEmpty ? null : pricingStructure.trim(),
       'vendor_rating': rating,
-      'vendor_status': status.trim(),
+      'vendor_status': nextStatus,
     };
 
     if (_s(vendorId).isEmpty) {
@@ -209,18 +253,31 @@ create table if not exists public.service_cost (
     required String status,
     String? rejectRemark,
   }) async {
+    final cleanVendorId = vendorId.trim();
+    final nextStatus = status.trim();
+    final current = await _client
+        .from('vendor')
+        .select('vendor_status')
+        .eq('vendor_id', cleanVendorId)
+        .limit(1)
+        .maybeSingle();
+    final currentStatus = current == null ? '' : _s((current as Map)['vendor_status']).toLowerCase();
+    if (nextStatus.toLowerCase() == 'inactive' && currentStatus != 'inactive') {
+      await _assertVendorCanBeInactive(cleanVendorId);
+    }
+
     final payload = <String, dynamic>{
-      'vendor_status': status.trim(),
+      'vendor_status': nextStatus,
       'vendor_reject_remark': _s(rejectRemark).isEmpty ? null : _s(rejectRemark),
       'reviewed_at': DateTime.now().toUtc().toIso8601String(),
     };
 
     try {
-      await _client.from('vendor').update(payload).eq('vendor_id', vendorId.trim());
+      await _client.from('vendor').update(payload).eq('vendor_id', cleanVendorId);
     } catch (error) {
       final message = error.toString().toLowerCase();
       if (message.contains('vendor_reject_remark') || message.contains('reviewed_at') || message.contains('column')) {
-        await _client.from('vendor').update({'vendor_status': status.trim()}).eq('vendor_id', vendorId.trim());
+        await _client.from('vendor').update({'vendor_status': nextStatus}).eq('vendor_id', cleanVendorId);
       } else {
         rethrow;
       }
@@ -346,11 +403,41 @@ create table if not exists public.service_cost (
     DateTime? serviceDate,
     required String notes,
   }) async {
+    final cleanJobOrderId = jobOrderId.trim();
+    final cleanVendorId = _s(vendorId).isEmpty ? null : _s(vendorId);
     final id = _s(serviceCostId).isEmpty ? newId('CST') : _s(serviceCostId);
     final totalCost = labourCost + partsCost + miscCost + taxCost;
+
+    final jobRows = await _client.from('service_job_order').select('status').eq('job_order_id', cleanJobOrderId);
+    final jobs = _rows(jobRows);
+    final jobStatus = jobs.isEmpty ? '' : _s(jobs.first['status']);
+    if (jobStatus == 'Completed') {
+      throw Exception('Completed job orders are locked and cannot receive a new service price.');
+    }
+
+    final existingRows = await _client.from('service_cost').select('service_cost_id, payment_status').eq('job_order_id', cleanJobOrderId);
+    final existingCosts = _rows(existingRows);
+    if (_s(serviceCostId).isEmpty && existingCosts.isNotEmpty) {
+      throw Exception('This job order already has a service price.');
+    }
+
+    Map<String, dynamic>? currentCost;
+    for (final row in existingCosts) {
+      if (_s(row['service_cost_id']) == id) {
+        currentCost = row;
+        break;
+      }
+    }
+    if (_s(serviceCostId).isNotEmpty && existingCosts.any((row) => _s(row['service_cost_id']) != id)) {
+      throw Exception('This job order already has another service price.');
+    }
+    if (currentCost != null && _s(currentCost['payment_status']).toLowerCase() == 'paid') {
+      throw Exception('Paid service prices are locked and cannot be edited.');
+    }
+
     final payload = <String, dynamic>{
-      'job_order_id': jobOrderId.trim(),
-      'vendor_id': _s(vendorId).isEmpty ? null : _s(vendorId),
+      'job_order_id': cleanJobOrderId,
+      'vendor_id': cleanVendorId,
       'labour_cost': labourCost,
       'parts_cost': partsCost,
       'misc_cost': miscCost,
