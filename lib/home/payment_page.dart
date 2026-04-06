@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/booking_hold_service.dart';
+import '../services/wallet_service.dart';
+import '../widgets/wallet_payment_selector.dart';
 import '../shell/main_shell.dart';
 import 'my_orders_page.dart';
 
@@ -59,13 +61,16 @@ class PaymentPage extends StatefulWidget {
   State<PaymentPage> createState() => _PaymentPageState();
 }
 
-enum PayMethod { card, tng, stripe }
+enum PayMethod { card, tng, stripe, wallet }
 
 class _PaymentPageState extends State<PaymentPage> {
   SupabaseClient get _supa => Supabase.instance.client;
 
   PayMethod _method = PayMethod.card;
   bool _paying = false;
+  final WalletService _walletService = WalletService();
+  double _walletBalance = 0;
+  bool _loadingWallet = false;
 
   final _cardNameCtrl = TextEditingController();
   final _cardNoCtrl = TextEditingController();
@@ -82,6 +87,7 @@ class _PaymentPageState extends State<PaymentPage> {
   void initState() {
     super.initState();
     _loadHoldTimer();
+    _loadWalletBalance();
   }
 
   @override
@@ -122,6 +128,8 @@ class _PaymentPageState extends State<PaymentPage> {
         return 'TNG';
       case PayMethod.stripe:
         return 'Stripe';
+      case PayMethod.wallet:
+        return 'Wallet';
     }
   }
 
@@ -216,6 +224,29 @@ class _PaymentPageState extends State<PaymentPage> {
         return r < 90;
       case PayMethod.tng:
         return r < 88;
+      case PayMethod.wallet:
+        return true;
+    }
+  }
+
+  Future<void> _loadWalletBalance() async {
+    setState(() => _loadingWallet = true);
+    try {
+      final balance = await _walletService.getWalletBalance(widget.userId);
+      if (!mounted) return;
+      setState(() {
+        _walletBalance = balance;
+        if (_walletBalance >= (widget.subTotal + widget.securityDeposit)) {
+          _method = PayMethod.wallet;
+        }
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _walletBalance = 0);
+    } finally {
+      if (mounted) {
+        setState(() => _loadingWallet = false);
+      }
     }
   }
 
@@ -275,7 +306,12 @@ class _PaymentPageState extends State<PaymentPage> {
     // Validate + create short reference (<= 10 chars) for DB safety.
     String ref;
     try {
-      if (_method == PayMethod.card) {
+      if (_method == PayMethod.wallet) {
+        if (_walletBalance < amount) {
+          throw 'Wallet balance is not enough.';
+        }
+        ref = 'WLT${(DateTime.now().millisecondsSinceEpoch % 1000000).toString().padLeft(6, '0')}';
+      } else if (_method == PayMethod.card) {
         final name = _cardNameCtrl.text.trim();
         final digits = _digits(_cardNoCtrl.text);
         final exp = _cardExpCtrl.text.trim();
@@ -287,7 +323,6 @@ class _PaymentPageState extends State<PaymentPage> {
         if (cvv.length < 3 || cvv.length > 4) throw 'CVV must be 3-4 digits.';
 
         final last4 = digits.substring(digits.length - 4);
-        // 2 + 4 + 4 = 10
         ref = 'CD$last4${(DateTime.now().millisecondsSinceEpoch % 10000).toString().padLeft(4, '0')}';
       } else if (_method == PayMethod.tng) {
         final tng = _tngRefCtrl.text.trim();
@@ -296,10 +331,8 @@ class _PaymentPageState extends State<PaymentPage> {
         final tail = clean.isEmpty
             ? (DateTime.now().millisecondsSinceEpoch % 10000000).toString().padLeft(7, '0')
             : clean.substring(math.max(0, clean.length - 7));
-        // 3 + 7 = 10
         ref = 'TNG$tail';
       } else {
-        // 3 + 7 = 10
         ref = 'STP${(DateTime.now().millisecondsSinceEpoch % 10000000).toString().padLeft(7, '0')}';
       }
 
@@ -310,16 +343,42 @@ class _PaymentPageState extends State<PaymentPage> {
         builder: (_) => const Center(child: CircularProgressIndicator()),
       );
 
-      final ok = await _simulateGateway(_method);
+      bool ok;
+      if (_method == PayMethod.wallet) {
+        try {
+          final result = await _walletService.payOrderWithWallet(
+            userId: widget.userId,
+            orderId: widget.bookingId,
+            amount: amount,
+          );
+          final success = result['success'] == true;
+          if (!success) {
+            throw (result['message'] ?? 'Wallet payment failed.').toString();
+          }
+          ref = (result['reference_no'] ?? result['tx_id'] ?? ref).toString();
+          ok = true;
+        } catch (e) {
+          if (mounted) Navigator.of(context).pop();
+          rethrow;
+        }
+      } else {
+        ok = await _simulateGateway(_method);
+      }
       if (mounted) Navigator.of(context).pop();
 
-      final dbOk = await _writePaymentToDb(success: ok, method: method, amount: amount, reference: ref);
+      final dbOk = _method == PayMethod.wallet
+          ? true
+          : await _writePaymentToDb(success: ok, method: method, amount: amount, reference: ref);
       if (!dbOk && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Payment record blocked by RLS (demo continues). Add payment INSERT policy in Supabase.'),
           ),
         );
+      }
+
+      if (_method == PayMethod.wallet && ok) {
+        await _loadWalletBalance();
       }
 
       if (!mounted) return;
@@ -363,6 +422,7 @@ class _PaymentPageState extends State<PaymentPage> {
       if (mounted) setState(() => _paying = false);
     }
   }
+
 
   Widget _kv(String k, String v) {
     return Padding(
@@ -515,6 +575,38 @@ class _PaymentPageState extends State<PaymentPage> {
             ),
           ],
         );
+      case PayMethod.wallet:
+        final enough = _walletBalance >= (widget.subTotal + widget.securityDeposit);
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SizedBox(height: 12),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                border: Border.all(color: enough ? Colors.green.shade200 : Colors.grey.shade300),
+                borderRadius: BorderRadius.circular(12),
+                color: enough ? Colors.green.shade50 : Colors.grey.shade100,
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Wallet', style: TextStyle(fontWeight: FontWeight.w800)),
+                  const SizedBox(height: 8),
+                  Text(
+                    _loadingWallet
+                        ? 'Checking wallet balance...'
+                        : enough
+                            ? 'Balance: RM ${_walletBalance.toStringAsFixed(2)}. Wallet will be used directly.'
+                            : 'Insufficient balance. Balance: RM ${_walletBalance.toStringAsFixed(2)}',
+                    style: TextStyle(color: Colors.grey.shade700),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        );
     }
   }
 
@@ -642,6 +734,17 @@ Widget _segButton({required String text, required bool selected, required VoidCa
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const Text('Payment Method', style: TextStyle(fontWeight: FontWeight.w900)),
+                        const SizedBox(height: 10),
+                        WalletPaymentSelector(
+                          walletBalance: _walletBalance,
+                          totalAmount: grandTotal,
+                          selectedMethod: _method == PayMethod.wallet ? 'Wallet' : _methodText(_method),
+                          onSelected: (value) {
+                            if (value == 'Wallet') {
+                              setState(() => _method = PayMethod.wallet);
+                            }
+                          },
+                        ),
                         const SizedBox(height: 10),
                         Row(
                           children: [

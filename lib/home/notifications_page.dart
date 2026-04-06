@@ -14,104 +14,95 @@ class _NotificationsPageState extends State<NotificationsPage> {
   SupabaseClient get _supa => Supabase.instance.client;
 
   late final InAppNotificationService _service;
-  late Future<List<Map<String, dynamic>>> _future;
-  bool _markingAllRead = false;
+  bool _markingAll = false;
 
   @override
   void initState() {
     super.initState();
     _service = InAppNotificationService(_supa);
-    _future = _load();
   }
-
-  Future<List<Map<String, dynamic>>> _load() {
-    return _service.getMyNotifications();
-  }
-
-  Future<void> _refresh() async {
-    setState(() {
-      _future = _load();
-    });
-    await _future;
-  }
-
-  Future<void> _markAllRead() async {
-    setState(() {
-      _markingAllRead = true;
-    });
-    try {
-      await _service.markAllReadForCurrentUser();
-      if (!mounted) return;
-      await _refresh();
-    } finally {
-      if (mounted) {
-        setState(() {
-          _markingAllRead = false;
-        });
-      }
-    }
-  }
-
-  Future<void> _openNotification(Map<String, dynamic> row) async {
-    final id = _s(row['notification_id']);
-    if (id.isNotEmpty && _s(row['read_status']).toLowerCase() != 'read') {
-      await _service.markRead(id).catchError((_) {});
-    }
-    if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(_titleFor(row)),
-        content: Text(_messageFor(row)),
-        actions: [
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
-    if (!mounted) return;
-    await _refresh();
-  }
-
-  String _s(dynamic value) => value == null ? '' : value.toString().trim();
 
   DateTime? _dt(dynamic value) {
     if (value == null) return null;
     if (value is DateTime) return value.isUtc ? value.toLocal() : value;
-    final parsed = DateTime.tryParse(value.toString());
-    if (parsed == null) return null;
-    return parsed.isUtc ? parsed.toLocal() : parsed;
-  }
-
-  String _titleFor(Map<String, dynamic> row) {
-    final type = _s(row['notification_type']);
-    if (type.isNotEmpty) {
-      return type
-          .replaceAll('_', ' ')
-          .split(' ')
-          .where((part) => part.isNotEmpty)
-          .map((part) => part[0].toUpperCase() + part.substring(1))
-          .join(' ');
+    try {
+      final parsed = DateTime.parse(value.toString());
+      return parsed.isUtc ? parsed.toLocal() : parsed;
+    } catch (_) {
+      return null;
     }
-    return 'Notification';
   }
 
-  String _messageFor(Map<String, dynamic> row) {
-    final raw = _s(row['notification_message']);
-    return raw.isEmpty ? 'No message.' : raw;
+  String _fmtDateTime(dynamic value) {
+    final d = _dt(value);
+    if (d == null) return '-';
+    var h = d.hour;
+    final mm = d.minute.toString().padLeft(2, '0');
+    final ap = h >= 12 ? 'pm' : 'am';
+    h %= 12;
+    if (h == 0) h = 12;
+    return '${d.day}/${d.month}/${d.year} $h:$mm$ap';
   }
 
-  String _whenText(Map<String, dynamic> row) {
-    final value = _dt(row['created_at']);
-    if (value == null) return '-';
-    final hour24 = value.hour;
-    var hour12 = hour24 % 12;
-    if (hour12 == 0) hour12 = 12;
-    final minute = value.minute.toString().padLeft(2, '0');
-    final suffix = hour24 >= 12 ? 'PM' : 'AM';
-    return '${value.day}/${value.month}/${value.year} $hour12:$minute $suffix';
+  Future<void> _markAllAsRead() async {
+    setState(() => _markingAll = true);
+    try {
+      await _service.markAllAsReadForCurrentUser();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('All notifications marked as read.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to update notifications: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _markingAll = false);
+    }
+  }
+
+  Future<void> _openNotification(Map<String, dynamic> row) async {
+    final id = (row['notification_id'] ?? '').toString().trim();
+    final isRead = row['is_read'] == true;
+    try {
+      if (!isRead && id.isNotEmpty) {
+        await _service.markAsRead(id);
+      }
+    } catch (_) {}
+
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text((row['title'] ?? 'Notification').toString()),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text((row['message'] ?? '').toString()),
+            const SizedBox(height: 12),
+            Text(
+              'Time: ${_fmtDateTime(row['created_at'])}',
+              style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
+            ),
+            if ((row['booking_id'] ?? '').toString().trim().isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Text(
+                'Booking: ${(row['booking_id'] ?? '').toString()}',
+                style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
+              ),
+            ],
+          ],
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -120,114 +111,113 @@ class _NotificationsPageState extends State<NotificationsPage> {
       appBar: AppBar(
         title: const Text('Notifications'),
         actions: [
-          IconButton(
-            tooltip: 'Refresh',
-            onPressed: _refresh,
-            icon: const Icon(Icons.refresh_rounded),
-          ),
           TextButton(
-            onPressed: _markingAllRead ? null : _markAllRead,
-            child: const Text('Mark all read'),
+            onPressed: _markingAll ? null : _markAllAsRead,
+            child: _markingAll
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Text('Read all'),
           ),
         ],
       ),
-      body: FutureBuilder<List<Map<String, dynamic>>>(
-        future: _future,
+      body: StreamBuilder<List<Map<String, dynamic>>>(
+        stream: _service.watchCurrentUserNotifications(),
         builder: (context, snapshot) {
-          if (snapshot.connectionState != ConnectionState.done) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
           }
-
           if (snapshot.hasError) {
             return Center(
               child: Padding(
                 padding: const EdgeInsets.all(16),
-                child: Text(snapshot.error.toString()),
+                child: Text(
+                  'Notification table is not ready yet. Please add the SQL setup first.\n\n${snapshot.error}',
+                  textAlign: TextAlign.center,
+                ),
               ),
             );
           }
 
           final rows = snapshot.data ?? const <Map<String, dynamic>>[];
           if (rows.isEmpty) {
-            return RefreshIndicator(
-              onRefresh: _refresh,
-              child: ListView(
-                padding: const EdgeInsets.all(24),
-                children: const [
-                  SizedBox(height: 120),
-                  Icon(Icons.notifications_none_rounded, size: 52),
-                  SizedBox(height: 16),
-                  Center(
-                    child: Text(
-                      'No notifications yet.',
-                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
-                    ),
-                  ),
-                ],
+            return Center(
+              child: Text(
+                'No notifications yet.',
+                style: TextStyle(color: Colors.grey.shade700),
               ),
             );
           }
 
-          return RefreshIndicator(
-            onRefresh: _refresh,
-            child: ListView.separated(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-              itemCount: rows.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 10),
-              itemBuilder: (context, index) {
-                final row = rows[index];
-                final unread = _s(row['read_status']).toLowerCase() != 'read';
-
-                return Card(
-                  child: ListTile(
-                    onTap: () => _openNotification(row),
-                    leading: CircleAvatar(
-                      backgroundColor: unread
-                          ? Theme.of(context).colorScheme.primaryContainer
-                          : Theme.of(context).colorScheme.surfaceContainerHighest,
-                      child: Icon(
-                        unread
-                            ? Icons.notifications_active_outlined
-                            : Icons.notifications_none_rounded,
-                      ),
+          return ListView.separated(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+            itemCount: rows.length,
+            separatorBuilder: (_, __) => const SizedBox(height: 10),
+            itemBuilder: (context, index) {
+              final row = rows[index];
+              final isRead = row['is_read'] == true;
+              final title = (row['title'] ?? 'Notification').toString();
+              final message = (row['message'] ?? '').toString();
+              return InkWell(
+                borderRadius: BorderRadius.circular(14),
+                onTap: () => _openNotification(row),
+                child: Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: isRead ? Colors.grey.shade300 : Theme.of(context).colorScheme.primary.withOpacity(0.35),
                     ),
-                    title: Text(
-                      _titleFor(row),
-                      style: const TextStyle(fontWeight: FontWeight.w800),
-                    ),
-                    subtitle: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const SizedBox(height: 4),
-                        Text(
-                          _messageFor(row),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          _whenText(row),
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Theme.of(context).colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                      ],
-                    ),
-                    trailing: unread
-                        ? Container(
-                            width: 10,
-                            height: 10,
-                            decoration: const BoxDecoration(
-                              color: Colors.red,
-                              shape: BoxShape.circle,
-                            ),
-                          )
-                        : null,
+                    color: isRead
+                        ? Colors.white
+                        : Theme.of(context).colorScheme.primary.withOpacity(0.06),
                   ),
-                );
-              },
-            ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        width: 10,
+                        height: 10,
+                        margin: const EdgeInsets.only(top: 6),
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: isRead ? Colors.grey.shade400 : Theme.of(context).colorScheme.primary,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              title,
+                              style: TextStyle(
+                                fontWeight: FontWeight.w800,
+                                color: isRead ? Colors.black87 : Colors.black,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              message,
+                              maxLines: 3,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(color: Colors.grey.shade800, height: 1.3),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              _fmtDateTime(row['created_at']),
+                              style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
           );
         },
       ),

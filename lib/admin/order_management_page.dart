@@ -1,6 +1,9 @@
 
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../services/in_app_notification_service.dart';
 
@@ -23,22 +26,40 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
   List<Map<String, dynamic>> _rows = const [];
   Map<String, Map<String, dynamic>> _usersById = const {};
   Map<String, Set<String>> _evidenceStagesByBooking = const {};
+  final TextEditingController _billingUserSearchCtrl = TextEditingController();
+  String? _billingSelectedUserId;
+  String? _billingSelectedBookingId;
+  bool _billingSubmitting = false;
 
   @override
   void initState() {
     super.initState();
     _load();
-    _q.addListener(() => setState(() {}));
+    _q.addListener(_handleSearchChanged);
+    _billingUserSearchCtrl.addListener(_handleSearchChanged);
   }
 
   @override
   void dispose() {
+    _q.removeListener(_handleSearchChanged);
+    _billingUserSearchCtrl.removeListener(_handleSearchChanged);
     _q.dispose();
+    _billingUserSearchCtrl.dispose();
     super.dispose();
   }
 
+  void _handleSearchChanged() {
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  void _setStateIfMounted(VoidCallback fn) {
+    if (!mounted) return;
+    setState(fn);
+  }
+
   Future<void> _load() async {
-    setState(() {
+    _setStateIfMounted(() {
       _loading = true;
       _error = null;
     });
@@ -82,15 +103,390 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
         if (userId.isNotEmpty) users[userId] = map;
       }
 
-      setState(() {
+      _setStateIfMounted(() {
         _rows = list;
         _usersById = users;
         _evidenceStagesByBooking = evidenceStagesByBooking;
       });
     } catch (e) {
-      setState(() => _error = e.toString());
+      _setStateIfMounted(() => _error = e.toString());
     } finally {
-      setState(() => _loading = false);
+      _setStateIfMounted(() => _loading = false);
+    }
+  }
+
+  String _chargeTypeDbValue(String value) {
+    switch (value.toString().trim().toLowerCase()) {
+      case 'damage':
+        return 'damage';
+      case 'scratch':
+        // Current DB check constraint does not accept `scratch` as a charge_type.
+        // Store it under `damage` and keep the visible title as `Scratch bill`.
+        return 'damage';
+      case 'late return':
+      case 'late_return':
+      case 'overtime':
+        return 'overtime';
+      case 'cleaning':
+        return 'cleaning';
+      case 'other':
+      default:
+        return 'other';
+    }
+  }
+
+  List<String> _chargeTypeCandidates(String value) {
+    final normalized = _chargeTypeDbValue(value);
+    switch (normalized) {
+      case 'damage':
+        return const ['damage', 'Damage', 'DAMAGE'];
+      case 'scratch':
+        return const ['scratch', 'Scratch', 'SCRATCH'];
+      case 'overtime':
+        return const ['overtime', 'late_return', 'late return', 'Late return', 'LATE_RETURN'];
+      case 'cleaning':
+        return const ['cleaning', 'Cleaning', 'CLEANING'];
+      case 'other':
+      default:
+        return const ['other', 'Other', 'OTHER'];
+    }
+  }
+
+  Future<void> _insertBookingExtraCharge({
+    required Map<String, dynamic> basePayload,
+  }) async {
+    final chargeType = (basePayload['charge_type'] ?? '').toString();
+    final candidates = _chargeTypeCandidates(chargeType);
+    PostgrestException? lastError;
+
+    for (final candidate in candidates) {
+      final payload = Map<String, dynamic>.from(basePayload)
+        ..['charge_type'] = candidate;
+      try {
+        await _supa.from('booking_extra_charge').insert(payload);
+        return;
+      } on PostgrestException catch (e) {
+        lastError = e;
+      }
+    }
+
+    final reducedPayloads = <Map<String, dynamic>>[];
+    for (final candidate in candidates) {
+      reducedPayloads.addAll([
+        {
+          'booking_id': basePayload['booking_id'],
+          'user_id': basePayload['user_id'],
+          'title': basePayload['title'],
+          'description': basePayload['description'] ?? basePayload['remark'] ?? basePayload['notes'],
+          'charge_type': candidate,
+          'amount': basePayload['amount'],
+          'charge_status': basePayload['charge_status'] ?? 'pending',
+          'photo_url': basePayload['photo_url'],
+          'created_at': basePayload['created_at'],
+        },
+        {
+          'booking_id': basePayload['booking_id'],
+          'user_id': basePayload['user_id'],
+          'title': basePayload['title'],
+          'charge_type': candidate,
+          'amount': basePayload['amount'],
+          'remark': basePayload['remark'] ?? basePayload['notes'] ?? basePayload['description'],
+          'charge_status': basePayload['charge_status'] ?? 'pending',
+          'created_at': basePayload['created_at'],
+        },
+        {
+          'booking_id': basePayload['booking_id'],
+          'title': basePayload['title'],
+          'charge_type': candidate,
+          'amount': basePayload['amount'],
+          'charge_status': basePayload['charge_status'] ?? 'pending',
+          'created_at': basePayload['created_at'],
+        },
+      ]);
+    }
+
+    for (final payload in reducedPayloads) {
+      try {
+        await _supa.from('booking_extra_charge').insert(payload);
+        return;
+      } on PostgrestException catch (e) {
+        lastError = e;
+      }
+    }
+
+    if (lastError != null) throw lastError;
+    throw Exception('Failed to issue extra charge.');
+  }
+
+  List<String> get _billingFilteredUserIds {
+    final q = _billingUserSearchCtrl.text.trim().toLowerCase();
+    final ids = _rows
+        .map((e) => (e['user_id'] ?? '').toString().trim())
+        .where((e) => e.isNotEmpty)
+        .toSet()
+        .toList()
+      ..sort();
+    if (q.isEmpty) return ids;
+    return ids.where((userId) {
+      final email = _userEmail(userId).toLowerCase();
+      final name = _userName(userId).toLowerCase();
+      return userId.toLowerCase().contains(q) || email.contains(q) || name.contains(q);
+    }).toList();
+  }
+
+  List<Map<String, dynamic>> _billingBookingsForUser(String userId) {
+    final list = _rows
+        .where((row) => (row['user_id'] ?? '').toString().trim() == userId)
+        .map((row) => Map<String, dynamic>.from(row))
+        .toList();
+    list.sort((a, b) => ((b['booking_date'] ?? '').toString()).compareTo((a['booking_date'] ?? '').toString()));
+    return list;
+  }
+
+  String _shortId(String prefix) {
+    final ms = DateTime.now().millisecondsSinceEpoch.toString();
+    return prefix + ms.substring(ms.length - 8);
+  }
+
+  Future<Map<String, String>> _uploadBillingPhoto({
+    required String bookingId,
+    required XFile file,
+  }) async {
+    final bytes = await file.readAsBytes();
+    final lower = file.name.toLowerCase();
+    final ext = lower.endsWith('.png') ? 'png' : 'jpg';
+    final contentType = ext == 'png' ? 'image/png' : 'image/jpeg';
+    final path = 'bills/$bookingId/${DateTime.now().millisecondsSinceEpoch}.$ext';
+    await _supa.storage.from('booking_evidence').uploadBinary(
+      path,
+      bytes,
+      fileOptions: FileOptions(contentType: contentType, upsert: true),
+    );
+    return {
+      'path': path,
+      'url': _supa.storage.from('booking_evidence').getPublicUrl(path),
+    };
+  }
+
+  Future<void> _openBillingDialog({
+    required String userId,
+    required Map<String, dynamic> booking,
+  }) async {
+    final amountCtrl = TextEditingController();
+    final reasonCtrl = TextEditingController();
+    final picker = ImagePicker();
+    String billType = 'damage';
+    Uint8List? photoBytes;
+    XFile? pickedFile;
+    bool saving = false;
+
+    try {
+      final pageContext = context;
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) {
+          return StatefulBuilder(
+            builder: (builderContext, setLocalState) {
+              Future<void> pickPhoto() async {
+                if (saving) return;
+                FocusManager.instance.primaryFocus?.unfocus();
+                final x = await picker.pickImage(
+                  source: ImageSource.gallery,
+                  imageQuality: 85,
+                );
+                if (x == null || !dialogContext.mounted) return;
+                final bytes = await x.readAsBytes();
+                if (!dialogContext.mounted) return;
+                setLocalState(() {
+                  pickedFile = x;
+                  photoBytes = bytes;
+                });
+              }
+
+              return AlertDialog(
+                title: const Text('Issue bill'),
+                content: SizedBox(
+                  width: 380,
+                  child: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('User ID: $userId'),
+                        const SizedBox(height: 6),
+                        Text('Booking: ${(booking['booking_id'] ?? '-').toString()}'),
+                        const SizedBox(height: 12),
+                        DropdownButtonFormField<String>(
+                          value: billType,
+                          decoration: const InputDecoration(
+                            labelText: 'Bill type',
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                          ),
+                          items: const [
+                            DropdownMenuItem(value: 'damage', child: Text('Damage')),
+                            DropdownMenuItem(value: 'scratch', child: Text('Scratch')),
+                            DropdownMenuItem(value: 'overtime', child: Text('Late return')),
+                            DropdownMenuItem(value: 'cleaning', child: Text('Cleaning')),
+                            DropdownMenuItem(value: 'other', child: Text('Other')),
+                          ],
+                          onChanged: (v) => setLocalState(() => billType = v ?? 'damage'),
+                        ),
+                        const SizedBox(height: 10),
+                        TextField(
+                          controller: amountCtrl,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          decoration: const InputDecoration(
+                            labelText: 'Amount',
+                            hintText: 'Example: 120.00',
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        TextField(
+                          controller: reasonCtrl,
+                          maxLines: 3,
+                          decoration: const InputDecoration(
+                            labelText: 'Reason',
+                            hintText: 'Explain the damage / scratch / bill reason',
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        OutlinedButton.icon(
+                          onPressed: saving ? null : pickPhoto,
+                          icon: const Icon(Icons.image_outlined),
+                          label: Text(
+                            pickedFile == null ? 'Upload picture' : 'Change picture',
+                          ),
+                        ),
+                        if (pickedFile != null) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            pickedFile!.name,
+                            style: TextStyle(color: Colors.grey.shade700),
+                          ),
+                        ],
+                        if (photoBytes != null) ...[
+                          const SizedBox(height: 10),
+                          SizedBox(
+                            width: double.infinity,
+                            height: 140,
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(12),
+                              child: Image.memory(
+                                photoBytes!,
+                                width: double.infinity,
+                                height: 140,
+                                fit: BoxFit.cover,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: saving ? null : () => Navigator.of(dialogContext).pop(),
+                    child: const Text('Cancel'),
+                  ),
+                  FilledButton(
+                    onPressed: saving
+                        ? null
+                        : () async {
+                            final bookingId = (booking['booking_id'] ?? '').toString().trim();
+                            final amount = double.tryParse(amountCtrl.text.trim()) ?? 0;
+                            final reason = reasonCtrl.text.trim();
+                            if (bookingId.isEmpty) {
+                              ScaffoldMessenger.of(dialogContext).showSnackBar(
+                                const SnackBar(content: Text('Booking is missing.')),
+                              );
+                              return;
+                            }
+                            if (amount <= 0) {
+                              ScaffoldMessenger.of(dialogContext).showSnackBar(
+                                const SnackBar(content: Text('Enter a valid amount.')),
+                              );
+                              return;
+                            }
+                            if (reason.isEmpty) {
+                              ScaffoldMessenger.of(dialogContext).showSnackBar(
+                                const SnackBar(content: Text('Reason is required.')),
+                              );
+                              return;
+                            }
+                            if (pickedFile == null) {
+                              ScaffoldMessenger.of(dialogContext).showSnackBar(
+                                const SnackBar(content: Text('Picture is required.')),
+                              );
+                              return;
+                            }
+
+                            setLocalState(() => saving = true);
+                            _setStateIfMounted(() => _billingSubmitting = true);
+                            try {
+                              final upload = await _uploadBillingPhoto(
+                                bookingId: bookingId,
+                                file: pickedFile!,
+                              );
+                              final createdAt = DateTime.now().toUtc().toIso8601String();
+                              final billLabel = _chargeTypeLabel(billType);
+                              final payload = <String, dynamic>{
+                                'booking_id': bookingId,
+                                'user_id': userId,
+                                'title': '$billLabel bill',
+                                'charge_type': billType,
+                                'amount': amount,
+                                'remark': reason,
+                                'notes': reason,
+                                'description': reason,
+                                'charge_status': 'pending',
+                                'photo_url': upload['url'],
+                                'photo_path': upload['path'],
+                                'created_at': createdAt,
+                              };
+                              await _insertBookingExtraCharge(basePayload: payload);
+                              if (!mounted || !dialogContext.mounted) return;
+                              Navigator.of(dialogContext).pop();
+                              if (!mounted) return;
+                              ScaffoldMessenger.of(pageContext).showSnackBar(
+                                const SnackBar(content: Text('Bill issued successfully.')),
+                              );
+                              await _load();
+                            } catch (e) {
+                              if (!dialogContext.mounted) return;
+                              ScaffoldMessenger.of(dialogContext).showSnackBar(
+                                SnackBar(content: Text('Failed to issue bill: $e')),
+                              );
+                              setLocalState(() => saving = false);
+                            } finally {
+                              _setStateIfMounted(() => _billingSubmitting = false);
+                            }
+                          },
+                    child: saving
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Text('Issue bill'),
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      );
+    } finally {
+      amountCtrl.dispose();
+      reasonCtrl.dispose();
     }
   }
 
@@ -428,6 +824,27 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
     await _load();
   }
 
+  String _chargeTypeLabel(dynamic value) {
+    final raw = (value ?? '').toString().trim().toLowerCase();
+    switch (raw) {
+      case 'damage':
+        return 'Damage';
+      case 'scratch':
+        return 'Scratch';
+      case 'overtime':
+      case 'late return':
+      case 'late_return':
+        return 'Late return';
+      case 'cleaning':
+        return 'Cleaning';
+      case 'other':
+        return 'Other';
+      default:
+        final text = (value ?? '').toString().trim();
+        return text.isEmpty ? 'Other' : text[0].toUpperCase() + text.substring(1);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final grouped = _grouped;
@@ -499,6 +916,111 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
                   ),
                 ),
               ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Builder(
+              builder: (context) {
+                final userIds = _billingFilteredUserIds;
+                final selectedUserId = userIds.contains(_billingSelectedUserId)
+                    ? _billingSelectedUserId
+                    : (userIds.isNotEmpty ? userIds.first : null);
+                final bookingOptions = selectedUserId == null ? <Map<String, dynamic>>[] : _billingBookingsForUser(selectedUserId);
+                final selectedBookingId = bookingOptions.any((row) => (row['booking_id'] ?? '').toString() == _billingSelectedBookingId)
+                    ? _billingSelectedBookingId
+                    : (bookingOptions.isNotEmpty ? (bookingOptions.first['booking_id'] ?? '').toString() : null);
+                final selectedBooking = bookingOptions.cast<Map<String, dynamic>?>().firstWhere(
+                      (row) => (row?['booking_id'] ?? '').toString() == selectedBookingId,
+                      orElse: () => bookingOptions.isEmpty ? null : bookingOptions.first,
+                    );
+
+                return Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('Billing', style: TextStyle(fontWeight: FontWeight.w900)),
+                        const SizedBox(height: 6),
+                        Text(
+                          'Search user ID, choose the user, then choose the order to issue a bill.',
+                          style: TextStyle(color: Colors.grey.shade700),
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: _billingUserSearchCtrl,
+                          decoration: const InputDecoration(
+                            prefixIcon: Icon(Icons.search),
+                            hintText: 'Search user ID / email / name',
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        DropdownButtonFormField<String>(
+                          value: selectedUserId,
+                          decoration: const InputDecoration(
+                            labelText: 'User',
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                          ),
+                          items: userIds
+                              .map(
+                                (userId) => DropdownMenuItem(
+                                  value: userId,
+                                  child: Text('$userId • ${_userEmail(userId).isEmpty ? _userName(userId) : _userEmail(userId)}'),
+                                ),
+                              )
+                              .toList(),
+                          onChanged: userIds.isEmpty
+                              ? null
+                              : (value) {
+                                  final bookings = value == null ? <Map<String, dynamic>>[] : _billingBookingsForUser(value);
+                                  setState(() {
+                                    _billingSelectedUserId = value;
+                                    _billingSelectedBookingId = bookings.isEmpty
+                                        ? null
+                                        : (bookings.first['booking_id'] ?? '').toString();
+                                  });
+                                },
+                        ),
+                        const SizedBox(height: 10),
+                        DropdownButtonFormField<String>(
+                          value: selectedBookingId,
+                          decoration: const InputDecoration(
+                            labelText: 'Order / Booking',
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                          ),
+                          items: bookingOptions
+                              .map(
+                                (row) => DropdownMenuItem(
+                                  value: (row['booking_id'] ?? '').toString(),
+                                  child: Text('${(row['booking_id'] ?? '-').toString()} • ${(row['vehicle_id'] ?? '-').toString()} • ${_money(row['total_rental_amount'])}'),
+                                ),
+                              )
+                              .toList(),
+                          onChanged: bookingOptions.isEmpty
+                              ? null
+                              : (value) => setState(() => _billingSelectedBookingId = value),
+                        ),
+                        const SizedBox(height: 10),
+                        SizedBox(
+                          width: double.infinity,
+                          child: FilledButton.icon(
+                            onPressed: _billingSubmitting || selectedUserId == null || selectedBooking == null
+                                ? null
+                                : () => _openBillingDialog(userId: selectedUserId!, booking: selectedBooking!),
+                            icon: const Icon(Icons.receipt_long_outlined),
+                            label: const Text('Issue bill'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
             ),
           ),
           Expanded(
@@ -773,7 +1295,29 @@ class _OrderDetailAdminPageState extends State<_OrderDetailAdminPage> {
     if (raw == 'card') return 'Card';
     if (raw == 'tng' || raw == 'touch n go' || raw == "touch 'n go" || raw == 'touchngo') return 'TNG';
     if (raw == 'stripe') return 'Stripe';
+    if (raw == 'wallet') return 'Wallet';
     return (value ?? '').toString().trim().isEmpty ? '-' : (value ?? '').toString().trim();
+  }
+
+  String _chargeTypeLabel(dynamic value) {
+    final raw = (value ?? '').toString().trim().toLowerCase();
+    switch (raw) {
+      case 'damage':
+        return 'Damage';
+      case 'scratch':
+        return 'Scratch';
+      case 'overtime':
+      case 'late return':
+      case 'late_return':
+        return 'Late return';
+      case 'cleaning':
+        return 'Cleaning';
+      case 'other':
+        return 'Other';
+      default:
+        final text = (value ?? '').toString().trim();
+        return text.isEmpty ? 'Other' : text[0].toUpperCase() + text.substring(1);
+    }
   }
 
   List<Map<String, dynamic>> get _pendingExtraCharges {
@@ -933,6 +1477,7 @@ class _OrderDetailAdminPageState extends State<_OrderDetailAdminPage> {
           final status = _chargeStatusLabel(row['charge_status']);
           final color = _chargeStatusColor(context, row['charge_status']);
           final type = (row['charge_type'] ?? 'Other').toString();
+          final title = (row['title'] ?? '').toString().trim();
           final note = (row['remark'] ?? row['notes'] ?? '').toString().trim();
           final amount = _money(row['amount']);
           final paymentMethod = _chargePaymentMethodLabel(
@@ -957,7 +1502,7 @@ class _OrderDetailAdminPageState extends State<_OrderDetailAdminPage> {
                   children: [
                     Expanded(
                       child: Text(
-                        type.isEmpty ? 'Other' : type[0].toUpperCase() + type.substring(1),
+                        title.isNotEmpty ? title : _chargeTypeLabel(type),
                         style: const TextStyle(fontWeight: FontWeight.w800),
                       ),
                     ),
