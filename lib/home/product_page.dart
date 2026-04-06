@@ -164,7 +164,7 @@ class _ProductPageState extends State<ProductPage> {
 
   bool get _hasTime => _start != null && _end != null;
 
-  int get _fuelPercent => (widget.fuelPercent ?? 100).clamp(0, 100);
+  int get _fuelPercent => (widget.fuelPercent ?? 100).clamp(0, 100).toInt();
 
   double get _fuelValue => _fuelPercent / 100.0;
 
@@ -216,10 +216,34 @@ class _ProductPageState extends State<ProductPage> {
     return '$displayHour:00 $suffix';
   }
 
+  bool _isSameDay(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
+
+  int? _minimumSelectableHour(DateTime date) {
+    final now = DateTime.now();
+    if (!_isSameDay(date, now)) return 0;
+    final nextHour =
+        (now.minute > 0 || now.second > 0 || now.millisecond > 0 || now.microsecond > 0)
+            ? now.hour + 1
+            : now.hour;
+    return nextHour >= 24 ? null : nextHour;
+  }
+
   Future<TimeOfDay?> _pickHourOnly({
     required String title,
     required TimeOfDay initialTime,
+    int minHour = 0,
   }) async {
+    if (minHour >= 24) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('The selected date is no longer available. Please choose another date.')),
+        );
+      }
+      return null;
+    }
+
+    final safeInitialHour = initialTime.hour < minHour ? minHour : initialTime.hour;
     final pickedHour = await showModalBottomSheet<int>(
       context: context,
       showDragHandle: true,
@@ -239,13 +263,14 @@ class _ProductPageState extends State<ProductPage> {
                 const Divider(height: 1),
                 Expanded(
                   child: ListView.builder(
-                    itemCount: 24,
+                    itemCount: 24 - minHour,
                     itemBuilder: (context, index) {
-                      final selected = index == initialTime.hour;
+                      final hour = index + minHour;
+                      final selected = hour == safeInitialHour;
                       return ListTile(
-                        title: Text(_hourLabel(index)),
+                        title: Text(_hourLabel(hour)),
                         trailing: selected ? const Icon(Icons.check_rounded) : null,
-                        onTap: () => Navigator.of(ctx).pop(index),
+                        onTap: () => Navigator.of(ctx).pop(hour),
                       );
                     },
                   ),
@@ -362,19 +387,35 @@ class _ProductPageState extends State<ProductPage> {
     );
     if (range == null) return;
 
+    final minStartHour = _minimumSelectableHour(range.start);
+    if (minStartHour == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('The selected start date is already over. Please choose another date.')),
+      );
+      return;
+    }
+
     final startTime = await _pickHourOnly(
       title: 'Select start hour',
       initialTime: _start != null
           ? TimeOfDay(hour: _start!.hour, minute: 0)
-          : const TimeOfDay(hour: 10, minute: 0),
+          : TimeOfDay(hour: minStartHour, minute: 0),
+      minHour: minStartHour,
     );
     if (startTime == null) return;
+
+    final sameDayRange = _isSameDay(range.start, range.end);
+    final minEndHour = sameDayRange
+        ? startTime.hour + 1
+        : (_minimumSelectableHour(range.end) ?? 0);
 
     final endTime = await _pickHourOnly(
       title: 'Select end hour',
       initialTime: _end != null
           ? TimeOfDay(hour: _end!.hour, minute: 0)
-          : const TimeOfDay(hour: 10, minute: 0),
+          : TimeOfDay(hour: minEndHour.clamp(0, 23).toInt(), minute: 0),
+      minHour: minEndHour,
     );
     if (endTime == null) return;
 
@@ -385,16 +426,22 @@ class _ProductPageState extends State<ProductPage> {
       startTime.hour,
       0,
     );
-    var end = DateTime(
+    final end = DateTime(
       range.end.year,
       range.end.month,
       range.end.day,
       endTime.hour,
       0,
     );
+
     if (!end.isAfter(start)) {
-      end = end.add(const Duration(days: 1));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('End time must be after start time.')),
+      );
+      return;
     }
+
     setState(() {
       _start = start;
       _end = end;
@@ -535,7 +582,7 @@ class _ProductPageState extends State<ProductPage> {
                         children: [
                           Expanded(
                             child: Text(
-                              'RM${widget.dailyRate.toStringAsFixed(0)} Ã· 24 = RM${hourlyRate.toStringAsFixed(2)}/hr',
+                              'RM${widget.dailyRate.toStringAsFixed(0)} ÷ 24 = RM${hourlyRate.toStringAsFixed(2)}/hr',
                               style: const TextStyle(fontWeight: FontWeight.w800),
                             ),
                           ),
@@ -555,7 +602,7 @@ class _ProductPageState extends State<ProductPage> {
                             ),
                           ),
                           Text(
-                            'Ã— RM${hourlyRate.toStringAsFixed(2)}',
+                            '× RM${hourlyRate.toStringAsFixed(2)}',
                             style: TextStyle(color: Colors.grey.shade700),
                           ),
                         ],

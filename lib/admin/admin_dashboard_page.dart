@@ -91,9 +91,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                       title: 'Users',
                       value: d.metrics.users.toString(),
                       icon: Icons.people_alt_outlined,
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const UserManagementPage()),
-                      ),
+                      onTap: null,
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -102,9 +100,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                       title: 'Leasers',
                       value: d.metrics.leasers.toString(),
                       icon: Icons.handshake_outlined,
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const LeaserAdminModulePage()),
-                      ),
+                      onTap: null,
                     ),
                   ),
                 ],
@@ -117,9 +113,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                       title: 'Order Total',
                       value: _money(d.metrics.orderTotal),
                       icon: Icons.shopping_bag_outlined,
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const OrderManagementPage()),
-                      ),
+                      onTap: null,
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -129,9 +123,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                       subtitle: 'Commission ${(PlatformRates.commissionRate * 100).toStringAsFixed(0)}%',
                       value: _money(d.metrics.platformRevenue),
                       icon: Icons.payments_outlined,
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const ReportsAdminPage()),
-                      ),
+                      onTap: null,
                     ),
                   ),
                 ],
@@ -141,7 +133,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
 
               _Section(
                 title: 'Order Management',
-                subtitle: 'View orders only â€¢ Deactivate if user issue',
+                subtitle: 'View orders only • Deactivate if user issue',
                 child: ElevatedButton.icon(
                   onPressed: () => Navigator.of(context).push(
                     MaterialPageRoute(builder: (_) => const OrderManagementPage()),
@@ -183,7 +175,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
 
               _Section(
                 title: 'Booking rate (last 14 days)',
-                subtitle: '${_fmtDate(d.start)} â†’ ${_fmtDate(d.end)}',
+                subtitle: '${_fmtDate(d.start)} → ${_fmtDate(d.end)}',
                 child: SimpleBarChart(values: bookingCounts),
               ),
 
@@ -230,16 +222,12 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                     _QuickChip(
                       icon: Icons.people_alt_outlined,
                       label: 'Users',
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const UserManagementPage()),
-                      ),
+                      onTap: null,
                     ),
                     _QuickChip(
                       icon: Icons.handshake_outlined,
                       label: 'Leasers',
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const LeaserAdminModulePage()),
-                      ),
+                      onTap: null,
                     ),
                     _QuickChip(
                       icon: Icons.place_outlined,
@@ -369,18 +357,24 @@ class _Section extends StatelessWidget {
 }
 
 class _QuickChip extends StatelessWidget {
-  const _QuickChip({required this.icon, required this.label, required this.onTap});
+  const _QuickChip({required this.icon, required this.label, this.onTap});
 
   final IconData icon;
   final String label;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
+    final enabled = onTap != null;
     return ActionChip(
-      avatar: Icon(icon, size: 18),
-      label: Text(label),
+      avatar: Icon(icon, size: 18, color: enabled ? null : Colors.grey.shade500),
+      label: Text(
+        label,
+        style: TextStyle(color: enabled ? null : Colors.grey.shade500),
+      ),
       onPressed: onTap,
+      backgroundColor: enabled ? null : Colors.grey.shade200,
+      side: BorderSide(color: enabled ? Colors.transparent : Colors.grey.shade300),
     );
   }
 }

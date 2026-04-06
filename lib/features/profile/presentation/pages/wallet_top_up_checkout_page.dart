@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../../services/wallet_service.dart';
+import '../../../../utils/card_expiry_input_formatter.dart';
 
 class WalletTopUpCheckoutPage extends StatefulWidget {
   const WalletTopUpCheckoutPage({
@@ -195,9 +196,11 @@ class _WalletTopUpCheckoutPageState extends State<WalletTopUpCheckoutPage> {
                     Expanded(
                       child: TextField(
                         controller: _expCtrl,
-                        keyboardType: TextInputType.datetime,
+                        keyboardType: TextInputType.number,
+                        inputFormatters: const [CardExpiryInputFormatter()],
                         decoration: const InputDecoration(
                           labelText: 'Expiry (MM/YY)',
+                          hintText: 'MM/YY',
                           border: OutlineInputBorder(),
                           isDense: true,
                         ),

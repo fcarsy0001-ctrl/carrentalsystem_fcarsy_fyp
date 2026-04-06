@@ -322,7 +322,7 @@ class _VehicleBrowsePageState extends State<VehicleBrowsePage> {
                 children: [
                   _SearchField(
                     controller: _searchCtrl,
-                    hintText: 'Search by model, location, typeâ€¦',
+                    hintText: 'Search by model, location, type...',
                     onClear: () {
                       _searchCtrl.clear();
                       FocusScope.of(context).unfocus();
@@ -646,12 +646,12 @@ class _BrowseVehicleTile extends StatelessWidget {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      '${vehicle.type} â€¢ ${vehicle.location}',
+                      '${vehicle.type} • ${vehicle.location}',
                       style: TextStyle(color: Colors.grey.shade700),
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      'RM${vehicle.dailyRate.toStringAsFixed(0)}/day â€¢ ${vehicle.seats} seats',
+                      'RM${vehicle.dailyRate.toStringAsFixed(0)}/day • ${vehicle.seats} seats',
                       style: TextStyle(color: Colors.grey.shade700),
                     ),
                   ],

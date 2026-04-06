@@ -475,7 +475,7 @@ class _NearbyMapPageState extends State<NearbyMapPage> {
                       Expanded(
                         child: Text(
                           _geocoding
-                              ? 'Loading map pinsâ€¦ (converting location to coordinates)'
+                              ? 'Loading map pins... (converting location to coordinates)'
                               : 'Each pin shows the total cars at that parking location. Tap a pin to see the full car list.',
                           style: TextStyle(color: Colors.grey.shade700),
                         ),

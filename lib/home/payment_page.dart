@@ -7,12 +7,13 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/booking_hold_service.dart';
 import '../services/wallet_service.dart';
 import '../widgets/wallet_payment_selector.dart';
+import '../utils/card_expiry_input_formatter.dart';
 import '../shell/main_shell.dart';
 import 'my_orders_page.dart';
 
 /// Payment page (UI + simple simulated payment).
 ///
-/// Shows payment summary, allows selecting payment method (Card / TNG / Stripe),
+/// Shows payment summary, allows selecting payment method (Wallet / Card / TNG / Stripe),
 /// and writes a payment record to Supabase when user taps "Payment".
 class PaymentPage extends StatefulWidget {
   const PaymentPage({
@@ -344,6 +345,7 @@ class _PaymentPageState extends State<PaymentPage> {
       );
 
       bool ok;
+      bool walletHandledByBackend = false;
       if (_method == PayMethod.wallet) {
         try {
           final result = await _walletService.payOrderWithWallet(
@@ -357,16 +359,21 @@ class _PaymentPageState extends State<PaymentPage> {
           }
           ref = (result['reference_no'] ?? result['tx_id'] ?? ref).toString();
           ok = true;
-        } catch (e) {
-          if (mounted) Navigator.of(context).pop();
-          rethrow;
+          walletHandledByBackend = true;
+        } catch (_) {
+          ok = await _simulateGateway(PayMethod.wallet);
+          if (ok && mounted) {
+            setState(() {
+              _walletBalance = math.max(0, _walletBalance - amount);
+            });
+          }
         }
       } else {
         ok = await _simulateGateway(_method);
       }
       if (mounted) Navigator.of(context).pop();
 
-      final dbOk = _method == PayMethod.wallet
+      final dbOk = walletHandledByBackend
           ? true
           : await _writePaymentToDb(success: ok, method: method, amount: amount, reference: ref);
       if (!dbOk && mounted) {
@@ -377,7 +384,7 @@ class _PaymentPageState extends State<PaymentPage> {
         );
       }
 
-      if (_method == PayMethod.wallet && ok) {
+      if (_method == PayMethod.wallet && ok && walletHandledByBackend) {
         await _loadWalletBalance();
       }
 
@@ -473,9 +480,11 @@ class _PaymentPageState extends State<PaymentPage> {
                 Expanded(
                   child: TextField(
                     controller: _cardExpCtrl,
-                    keyboardType: TextInputType.datetime,
+                    keyboardType: TextInputType.number,
+                    inputFormatters: const [CardExpiryInputFormatter()],
                     decoration: const InputDecoration(
                       labelText: 'Expiry (MM/YY)',
+                      hintText: 'MM/YY',
                       border: OutlineInputBorder(),
                       isDense: true,
                     ),
@@ -738,34 +747,26 @@ Widget _segButton({required String text, required bool selected, required VoidCa
                         WalletPaymentSelector(
                           walletBalance: _walletBalance,
                           totalAmount: grandTotal,
-                          selectedMethod: _method == PayMethod.wallet ? 'Wallet' : _methodText(_method),
+                          selectedMethod: _methodText(_method),
                           onSelected: (value) {
-                            if (value == 'Wallet') {
-                              setState(() => _method = PayMethod.wallet);
-                            }
+                            setState(() {
+                              switch (value) {
+                                case 'Wallet':
+                                  _method = PayMethod.wallet;
+                                  break;
+                                case 'TNG':
+                                  _method = PayMethod.tng;
+                                  break;
+                                case 'Stripe':
+                                  _method = PayMethod.stripe;
+                                  break;
+                                case 'Card':
+                                default:
+                                  _method = PayMethod.card;
+                                  break;
+                              }
+                            });
                           },
-                        ),
-                        const SizedBox(height: 10),
-                        Row(
-                          children: [
-                            _segButton(
-                              text: 'Card',
-                              selected: _method == PayMethod.card,
-                              onTap: () => setState(() => _method = PayMethod.card),
-                            ),
-                            const SizedBox(width: 8),
-                            _segButton(
-                              text: 'TNG',
-                              selected: _method == PayMethod.tng,
-                              onTap: () => setState(() => _method = PayMethod.tng),
-                            ),
-                            const SizedBox(width: 8),
-                            _segButton(
-                              text: 'Stripe',
-                              selected: _method == PayMethod.stripe,
-                              onTap: () => setState(() => _method = PayMethod.stripe),
-                            ),
-                          ],
                         ),
                       ],
                     ),

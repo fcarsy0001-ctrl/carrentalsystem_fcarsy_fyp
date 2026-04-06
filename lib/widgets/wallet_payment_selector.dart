@@ -7,7 +7,7 @@ class WalletPaymentSelector extends StatelessWidget {
     required this.totalAmount,
     required this.selectedMethod,
     required this.onSelected,
-    this.otherMethods = const ['Card', 'Online Banking', 'TNG'],
+    this.otherMethods = const ['Card', 'TNG', 'Stripe'],
   });
 
   final double walletBalance;
@@ -17,6 +17,19 @@ class WalletPaymentSelector extends StatelessWidget {
   final List<String> otherMethods;
 
   bool get canUseWallet => walletBalance >= totalAmount;
+
+  IconData _iconForMethod(String method) {
+    switch (method.toLowerCase()) {
+      case 'card':
+        return Icons.credit_card_outlined;
+      case 'tng':
+        return Icons.account_balance_wallet_outlined;
+      case 'stripe':
+        return Icons.flash_on_outlined;
+      default:
+        return Icons.payments_outlined;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -38,7 +51,7 @@ class WalletPaymentSelector extends StatelessWidget {
           _PaymentTile(
             title: method,
             subtitle: 'Use $method to pay',
-            icon: Icons.payments_outlined,
+            icon: _iconForMethod(method),
             selected: selectedMethod == method,
             enabled: true,
             onTap: () => onSelected(method),

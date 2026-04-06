@@ -67,6 +67,10 @@ class OrderBillService {
           'status': row['charge_status'],
           'created_at': row['created_at'],
           'photo_url': row['photo_url'],
+          'photo_path': row['photo_path'],
+          'payment_method': row['payment_method'],
+          'payment_reference': row['payment_reference'],
+          'paid_at': row['paid_at'],
           'supports_wallet_payment': true,
         });
       }
@@ -94,6 +98,10 @@ class OrderBillService {
           'status': row['status'],
           'created_at': row['issued_at'] ?? row['created_at'],
           'photo_url': row['photo_url'],
+          'photo_path': row['photo_path'],
+          'payment_method': row['payment_method'],
+          'payment_reference': row['payment_reference'],
+          'paid_at': row['paid_at'],
           'supports_wallet_payment': false,
         });
       }

@@ -11,6 +11,7 @@ import '../config/supabase_config.dart';
 import '../services/booking_hold_service.dart';
 import '../services/iot_led_service.dart';
 import '../services/wallet_service.dart';
+import '../utils/card_expiry_input_formatter.dart';
 
 class MyOrderDetailsPage extends StatefulWidget {
   const MyOrderDetailsPage({
@@ -288,9 +289,11 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
                         Expanded(
                           child: TextField(
                             controller: cardExpCtrl,
-                            keyboardType: TextInputType.datetime,
+                            keyboardType: TextInputType.number,
+                            inputFormatters: const [CardExpiryInputFormatter()],
                             decoration: const InputDecoration(
                               labelText: 'Expiry (MM/YY)',
+                              hintText: 'MM/YY',
                               border: OutlineInputBorder(),
                               isDense: true,
                             ),
@@ -510,6 +513,18 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
     }
   }
 
+  String? _chargePhotoUrl(Map<String, dynamic> row) {
+    final direct = (row['photo_url'] ?? '').toString().trim();
+    if (direct.isNotEmpty) return direct;
+    final path = (row['photo_path'] ?? '').toString().trim();
+    if (path.isEmpty) return null;
+    try {
+      return _supa.storage.from(_evidenceBucket).getPublicUrl(path);
+    } catch (_) {
+      return null;
+    }
+  }
+
   Widget _buildExtraChargeSection() {
     if (_loadingExtraCharges) {
       return const _SectionCard(
@@ -548,6 +563,7 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
           final paymentReference = ((row['payment_reference'] ?? row['charge_payment_reference']) ?? '')
               .toString()
               .trim();
+          final photoUrl = _chargePhotoUrl(row);
           final isPending = status == 'Pending';
           return Container(
             width: double.infinity,
@@ -588,6 +604,10 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
                 if (note.isNotEmpty) ...[
                   const SizedBox(height: 6),
                   Text(note, style: TextStyle(color: Colors.grey.shade800, height: 1.3)),
+                ],
+                if (photoUrl != null) ...[
+                  const SizedBox(height: 10),
+                  _BillPhotoDropdown(imageUrl: photoUrl),
                 ],
                 if (status == 'Paid' && paymentMethodLabel != '-') ...[
                   const SizedBox(height: 6),
@@ -1943,6 +1963,69 @@ class _SectionCard extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           child,
+        ],
+      ),
+    );
+  }
+}
+
+class _BillPhotoDropdown extends StatefulWidget {
+  const _BillPhotoDropdown({required this.imageUrl});
+
+  final String imageUrl;
+
+  @override
+  State<_BillPhotoDropdown> createState() => _BillPhotoDropdownState();
+}
+
+class _BillPhotoDropdownState extends State<_BillPhotoDropdown> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade300),
+      ),
+      child: Column(
+        children: [
+          ListTile(
+            dense: true,
+            leading: const Icon(Icons.image_outlined),
+            title: const Text('Billing picture', style: TextStyle(fontWeight: FontWeight.w700)),
+            subtitle: Text(_expanded ? 'Tap to hide picture' : 'Tap to view picture'),
+            trailing: Icon(_expanded ? Icons.expand_less : Icons.expand_more),
+            onTap: () => setState(() => _expanded = !_expanded),
+          ),
+          if (_expanded)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: AspectRatio(
+                  aspectRatio: 16 / 9,
+                  child: Image.network(
+                    widget.imageUrl,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => Container(
+                      color: Colors.grey.shade200,
+                      alignment: Alignment.center,
+                      child: const Text('Unable to load picture'),
+                    ),
+                    loadingBuilder: (context, child, progress) {
+                      if (progress == null) return child;
+                      return Container(
+                        color: Colors.grey.shade100,
+                        alignment: Alignment.center,
+                        child: const CircularProgressIndicator(),
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
     );

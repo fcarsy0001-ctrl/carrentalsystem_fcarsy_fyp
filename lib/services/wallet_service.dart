@@ -12,13 +12,57 @@ class WalletService {
   }
 
   Future<List<Map<String, dynamic>>> getWalletTransactions(String userId) async {
-    final rows = await _supabase
-        .from('wallet_transactions')
-        .select()
-        .eq('user_id', userId)
-        .order('created_at', ascending: false);
+    final merged = <Map<String, dynamic>>[];
 
-    return List<Map<String, dynamic>>.from(rows);
+    try {
+      final rows = await _supabase
+          .from('wallet_transactions')
+          .select()
+          .eq('user_id', userId);
+      for (final row in List<Map<String, dynamic>>.from(rows)) {
+        merged.add(_normalizeWalletTransactionRow(
+          row,
+          fallbackSource: 'wallet_transactions',
+        ));
+      }
+    } catch (_) {}
+
+    try {
+      final rows = await _supabase
+          .from('wallet_transaction')
+          .select()
+          .eq('user_id', userId);
+      for (final row in List<Map<String, dynamic>>.from(rows)) {
+        merged.add(_normalizeWalletTransactionRow(
+          row,
+          fallbackSource: 'wallet_transaction',
+        ));
+      }
+    } catch (_) {}
+
+    if (merged.isEmpty) return const [];
+
+    final seen = <String>{};
+    final unique = <Map<String, dynamic>>[];
+    for (final row in merged) {
+      final source = (row['source'] ?? '').toString().trim();
+      final id = (row['tx_id'] ?? row['transaction_id'] ?? row['id'] ?? '').toString().trim();
+      final fallbackKey = [
+        source,
+        (row['created_at'] ?? '').toString().trim(),
+        (row['tx_type'] ?? '').toString().trim(),
+        (row['amount'] ?? '').toString().trim(),
+        (row['reference_no'] ?? '').toString().trim(),
+        (row['remark'] ?? '').toString().trim(),
+      ].join('|');
+      final key = id.isNotEmpty ? '$source|$id' : fallbackKey;
+      if (seen.add(key)) {
+        unique.add(row);
+      }
+    }
+
+    unique.sort((a, b) => _walletTxSortKey(b).compareTo(_walletTxSortKey(a)));
+    return unique;
   }
 
   Future<Map<String, dynamic>> topUp({
@@ -67,6 +111,34 @@ class WalletService {
     if (value == null) return 0.0;
     if (value is num) return value.toDouble();
     return double.tryParse(value.toString()) ?? 0.0;
+  }
+
+
+  Map<String, dynamic> _normalizeWalletTransactionRow(
+    Map<String, dynamic> row, {
+    required String fallbackSource,
+  }) {
+    final map = Map<String, dynamic>.from(row);
+    map['source'] = (map['source'] ?? fallbackSource).toString();
+    map['created_at'] = (map['created_at'] ?? map['transaction_date'] ?? map['date'] ?? '').toString();
+    map['reference_no'] = (map['reference_no'] ?? map['reference'] ?? '').toString();
+    map['remark'] = (map['remark'] ?? map['description'] ?? map['notes'] ?? '').toString();
+    map['related_booking_id'] = (map['related_booking_id'] ?? map['booking_id'] ?? '').toString();
+    map['related_bill_id'] = (map['related_bill_id'] ?? map['charge_id'] ?? map['bill_id'] ?? '').toString();
+    map['payment_method'] = (map['payment_method'] ?? '').toString();
+    map['tx_type'] = (map['tx_type'] ?? map['type'] ?? '').toString();
+    if ((map['direction'] ?? '').toString().trim().isEmpty) {
+      final type = (map['tx_type'] ?? '').toString().trim().toLowerCase();
+      map['direction'] =
+          type.contains('top_up') || type.contains('topup') || type.contains('refund') || type.contains('credit')
+              ? 'credit'
+              : 'debit';
+    }
+    return map;
+  }
+
+  String _walletTxSortKey(Map<String, dynamic> row) {
+    return (row['created_at'] ?? row['transaction_date'] ?? row['date'] ?? '').toString();
   }
 
   bool _sameMoney(double a, double b) => (a - b).abs() < 0.005;

@@ -30,6 +30,9 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
   String? _billingSelectedUserId;
   String? _billingSelectedBookingId;
   bool _billingSubmitting = false;
+  String _billingHistoryFilter = 'All';
+  List<Map<String, dynamic>> _billingHistoryRows = const [];
+  String _managementSection = 'Orders';
 
   @override
   void initState() {
@@ -93,6 +96,32 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
         evidenceStagesByBooking = <String, Set<String>>{};
       }
 
+      var billingHistoryRows = <Map<String, dynamic>>[];
+      try {
+        final extraChargeRows = await _supa
+            .from('booking_extra_charge')
+            .select('*')
+            .limit(10000);
+        for (final row in (extraChargeRows as List)) {
+          billingHistoryRows.add(_normalizeBillingHistoryRow(
+            Map<String, dynamic>.from(row as Map),
+            source: 'booking_extra_charge',
+          ));
+        }
+      } catch (_) {}
+      try {
+        final orderBillRows = await _supa
+            .from('order_bills')
+            .select('*')
+            .limit(5000);
+        for (final row in (orderBillRows as List)) {
+          billingHistoryRows.add(_normalizeBillingHistoryRow(
+            Map<String, dynamic>.from(row as Map),
+            source: 'order_bills',
+          ));
+        }
+      } catch (_) {}
+
       final list = (bookingRows as List)
           .map((e) => Map<String, dynamic>.from(e as Map))
           .toList();
@@ -102,11 +131,13 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
         final userId = (map['user_id'] ?? '').toString().trim();
         if (userId.isNotEmpty) users[userId] = map;
       }
+      billingHistoryRows.sort((a, b) => _billingHistorySortKey(b).compareTo(_billingHistorySortKey(a)));
 
       _setStateIfMounted(() {
         _rows = list;
         _usersById = users;
         _evidenceStagesByBooking = evidenceStagesByBooking;
+        _billingHistoryRows = billingHistoryRows;
       });
     } catch (e) {
       _setStateIfMounted(() => _error = e.toString());
@@ -241,6 +272,88 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
         .toList();
     list.sort((a, b) => ((b['booking_date'] ?? '').toString()).compareTo((a['booking_date'] ?? '').toString()));
     return list;
+  }
+
+
+  Map<String, dynamic> _normalizeBillingHistoryRow(
+    Map<String, dynamic> row, {
+    required String source,
+  }) {
+    final map = Map<String, dynamic>.from(row);
+    final rawStatus = source == 'booking_extra_charge'
+        ? (map['charge_status'] ?? 'pending').toString()
+        : (map['status'] ?? 'pending').toString();
+    final normalizedStatus = rawStatus.trim().toLowerCase();
+    map['history_source'] = source;
+    map['history_id'] = (map['charge_id'] ?? map['bill_id'] ?? map['id'] ?? '').toString().trim();
+    map['booking_id'] = (map['booking_id'] ?? map['order_id'] ?? '').toString().trim();
+    map['user_id'] = (map['user_id'] ?? '').toString().trim();
+    map['title'] = (map['title'] ?? '').toString().trim();
+    map['description'] = (map['remark'] ?? map['notes'] ?? map['description'] ?? '').toString().trim();
+    map['bill_type'] = (map['charge_type'] ?? map['bill_type'] ?? 'other').toString().trim();
+    map['status_label'] = normalizedStatus == 'paid'
+        ? 'Paid'
+        : normalizedStatus == 'cancelled'
+            ? 'Cancelled'
+            : normalizedStatus == 'waived'
+                ? 'Waived'
+                : 'Pending';
+    map['amount'] = (map['amount'] is num) ? (map['amount'] as num).toDouble() : double.tryParse((map['amount'] ?? '').toString()) ?? 0.0;
+    map['photo_url'] = (map['photo_url'] ?? '').toString().trim();
+    map['photo_path'] = (map['photo_path'] ?? '').toString().trim();
+    map['payment_method'] = (map['payment_method'] ?? map['charge_payment_method'] ?? '').toString().trim();
+    map['payment_reference'] = (map['payment_reference'] ?? map['charge_payment_reference'] ?? '').toString().trim();
+    map['created_at'] = (map['created_at'] ?? map['issued_at'] ?? map['paid_at'] ?? '').toString().trim();
+    map['paid_at'] = (map['paid_at'] ?? '').toString().trim();
+    return map;
+  }
+
+  String _billingHistorySortKey(Map<String, dynamic> row) {
+    return (row['created_at'] ?? row['paid_at'] ?? '').toString();
+  }
+
+  List<Map<String, dynamic>> _billingHistoryForUser(String userId) {
+    final rows = _billingHistoryRows
+        .where((row) => (row['user_id'] ?? '').toString().trim() == userId)
+        .where((row) {
+          switch (_billingHistoryFilter) {
+            case 'Pending':
+              return (row['status_label'] ?? '').toString() == 'Pending';
+            case 'Paid':
+              return (row['status_label'] ?? '').toString() == 'Paid';
+            default:
+              return true;
+          }
+        })
+        .map((row) => Map<String, dynamic>.from(row))
+        .toList();
+    rows.sort((a, b) => _billingHistorySortKey(b).compareTo(_billingHistorySortKey(a)));
+    return rows;
+  }
+
+  Color _billingHistoryStatusColor(String status) {
+    switch (status.toLowerCase()) {
+      case 'paid':
+        return Colors.green;
+      case 'cancelled':
+        return Colors.red;
+      case 'waived':
+        return Colors.blueGrey;
+      default:
+        return Colors.orange;
+    }
+  }
+
+  String? _billingHistoryPhotoUrl(Map<String, dynamic> row) {
+    final direct = (row['photo_url'] ?? '').toString().trim();
+    if (direct.isNotEmpty) return direct;
+    final path = (row['photo_path'] ?? '').toString().trim();
+    if (path.isEmpty) return null;
+    try {
+      return _supa.storage.from('booking_evidence').getPublicUrl(path);
+    } catch (_) {
+      return null;
+    }
   }
 
   String _shortId(String prefix) {
@@ -845,12 +958,518 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
     }
   }
 
+  Widget _buildManagementToggle() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: [
+            for (final option in const ['Orders', 'Billing'])
+              ChoiceChip(
+                label: Text(option),
+                selected: _managementSection == option,
+                onSelected: (_) => setState(() => _managementSection = option),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildOrdersSection(List<_UserOrderGroup> grouped) {
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_error != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Text(_error!),
+        ),
+      );
+    }
+
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+        children: [
+          Column(
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _q,
+                      decoration: const InputDecoration(
+                        prefixIcon: Icon(Icons.search),
+                        hintText: 'Search user id / email / booking / vehicle',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  DropdownButton<String>(
+                    value: _statusFilter,
+                    items: const [
+                      DropdownMenuItem(value: 'All', child: Text('All')),
+                      DropdownMenuItem(value: 'Incoming', child: Text('Incoming')),
+                      DropdownMenuItem(value: 'Paid', child: Text('Paid')),
+                      DropdownMenuItem(value: 'Active', child: Text('Active')),
+                      DropdownMenuItem(value: 'Inactive', child: Text('Inactive')),
+                      DropdownMenuItem(value: 'Deactive', child: Text('Deactive')),
+                      DropdownMenuItem(value: 'Holding', child: Text('Holding')),
+                      DropdownMenuItem(value: 'Cancelled', child: Text('Cancelled')),
+                    ],
+                    onChanged: (v) => setState(() => _statusFilter = v ?? 'All'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final option in const [
+                      'All',
+                      'Incoming',
+                      'Paid',
+                      'Active',
+                      'Inactive',
+                      'Deactive',
+                      'Holding',
+                      'Cancelled',
+                    ])
+                      FilterChip(
+                        label: Text(option),
+                        selected: _statusFilter == option,
+                        onSelected: (_) => setState(() => _statusFilter = option),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (grouped.isEmpty)
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(
+                  'No orders found for the current filter.',
+                  style: TextStyle(color: Colors.grey.shade700),
+                ),
+              ),
+            )
+          else
+            ...grouped.map((group) {
+              final email = group.email.isEmpty ? '-' : group.email;
+              final nameText = group.name.isEmpty ? '' : ' • ${group.name}';
+
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Card(
+                  child: ExpansionTile(
+                    tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                    childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                    title: Text(
+                      'User ID: ${group.userId.isEmpty ? '-' : group.userId}',
+                      style: const TextStyle(fontWeight: FontWeight.w900),
+                    ),
+                    subtitle: Text('Gmail: $email$nameText\nOrders: ${group.orders.length} • Total: ${_money(group.totalAmount)}'),
+                    children: group.orders.map((r) {
+                      final id = (r['booking_id'] ?? '').toString();
+                      final st = (r['booking_status'] ?? '').toString();
+                      final statusLabel = _effectiveStatusLabel(r);
+                      final statusColor = _effectiveStatusColor(r);
+                      final isPhotoEligible = _isPhotoEligibleOrder(r);
+                      final amt = _money(r['total_rental_amount']);
+                      final vid = (r['vehicle_id'] ?? '').toString();
+                      final bookingDate = (r['booking_date'] ?? '').toString();
+                      return Container(
+                        margin: const EdgeInsets.only(top: 8),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.grey.shade300),
+                        ),
+                        child: ListTile(
+                          onTap: () => _openDetail(r),
+                          title: Text(id, style: const TextStyle(fontWeight: FontWeight.w800)),
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('Vehicle: $vid\nAmount: $amt\nDate: $bookingDate'),
+                              if (isPhotoEligible && (_hasEvidenceInRow(r, 'pickup') || _hasEvidenceInRow(r, 'dropoff'))) ...[
+                                const SizedBox(height: 8),
+                                Wrap(
+                                  spacing: 6,
+                                  runSpacing: 6,
+                                  children: [
+                                    if (_hasEvidenceInRow(r, 'pickup'))
+                                      _evidenceChip(text: 'Pickup photos', color: Colors.indigo),
+                                    if (_hasEvidenceInRow(r, 'dropoff'))
+                                      _evidenceChip(text: 'Drop-off photos', color: Colors.deepOrange),
+                                  ],
+                                ),
+                              ] else if (!isPhotoEligible) ...[
+                                const SizedBox(height: 8),
+                                Text(
+                                  'Pickup / drop-off photos not available for $statusLabel orders.',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey.shade700,
+                                    fontStyle: FontStyle.italic,
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                decoration: BoxDecoration(
+                                  color: statusColor.withOpacity(0.12),
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                child: Text(
+                                  statusLabel,
+                                  style: TextStyle(
+                                    color: statusColor,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ),
+                              PopupMenuButton<String>(
+                                onSelected: (v) async {
+                                  if (v == 'view') {
+                                    await _openDetail(r);
+                                    return;
+                                  }
+                                  if (v == 'deactivate') {
+                                    await _deactivate(r);
+                                    return;
+                                  }
+                                  if (v == 'activate') {
+                                    await _activate(r);
+                                    return;
+                                  }
+                                  if (v == 'cancel') {
+                                    await _cancel(r);
+                                    return;
+                                  }
+                                },
+                                itemBuilder: (_) {
+                                  final sl = _normStatus(st);
+                                  final isCancelled = sl == 'cancelled';
+                                  final isDeactive = sl == 'deactive';
+                                  return [
+                                    const PopupMenuItem(value: 'view', child: Text('View')),
+                                    if (!isCancelled && !isDeactive)
+                                      const PopupMenuItem(value: 'deactivate', child: Text('Deactivate')),
+                                    if (!isCancelled && isDeactive)
+                                      const PopupMenuItem(value: 'activate', child: Text('Activate')),
+                                    if (!isCancelled)
+                                      const PopupMenuItem(value: 'cancel', child: Text('Cancel')),
+                                  ];
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ),
+              );
+            }),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBillingCard() {
+    final userIds = _billingFilteredUserIds;
+    final selectedUserId = userIds.contains(_billingSelectedUserId)
+        ? _billingSelectedUserId
+        : (userIds.isNotEmpty ? userIds.first : null);
+    final bookingOptions = selectedUserId == null ? <Map<String, dynamic>>[] : _billingBookingsForUser(selectedUserId);
+    final selectedBookingId = bookingOptions.any((row) => (row['booking_id'] ?? '').toString() == _billingSelectedBookingId)
+        ? _billingSelectedBookingId
+        : (bookingOptions.isNotEmpty ? (bookingOptions.first['booking_id'] ?? '').toString() : null);
+    final selectedBooking = bookingOptions.cast<Map<String, dynamic>?>().firstWhere(
+          (row) => (row?['booking_id'] ?? '').toString() == selectedBookingId,
+          orElse: () => bookingOptions.isEmpty ? null : bookingOptions.first,
+        );
+    final billingHistoryRows = selectedUserId == null ? <Map<String, dynamic>>[] : _billingHistoryForUser(selectedUserId);
+    final pendingBillingCount = billingHistoryRows
+        .where((row) => (row['status_label'] ?? '').toString() == 'Pending')
+        .length;
+    final paidBillingCount = billingHistoryRows
+        .where((row) => (row['status_label'] ?? '').toString() == 'Paid')
+        .length;
+    final pendingBillingTotal = billingHistoryRows
+        .where((row) => (row['status_label'] ?? '').toString() == 'Pending')
+        .fold<double>(0, (sum, row) => sum + (((row['amount'] ?? 0) as num).toDouble()));
+    final paidBillingTotal = billingHistoryRows
+        .where((row) => (row['status_label'] ?? '').toString() == 'Paid')
+        .fold<double>(0, (sum, row) => sum + (((row['amount'] ?? 0) as num).toDouble()));
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Billing', style: TextStyle(fontWeight: FontWeight.w900)),
+            const SizedBox(height: 6),
+            Text(
+              'Search user ID, choose the user, then choose the order to issue a bill. Billing history below helps you review older charges before issuing a new one.',
+              style: TextStyle(color: Colors.grey.shade700),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _billingUserSearchCtrl,
+              decoration: const InputDecoration(
+                prefixIcon: Icon(Icons.search),
+                hintText: 'Search user ID / email / name',
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+            ),
+            const SizedBox(height: 10),
+            DropdownButtonFormField<String>(
+              value: selectedUserId,
+              decoration: const InputDecoration(
+                labelText: 'User',
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+              items: userIds
+                  .map(
+                    (userId) => DropdownMenuItem(
+                      value: userId,
+                      child: Text('$userId • ${_userEmail(userId).isEmpty ? _userName(userId) : _userEmail(userId)}'),
+                    ),
+                  )
+                  .toList(),
+              onChanged: userIds.isEmpty
+                  ? null
+                  : (value) {
+                      final bookings = value == null ? <Map<String, dynamic>>[] : _billingBookingsForUser(value);
+                      setState(() {
+                        _billingSelectedUserId = value;
+                        _billingSelectedBookingId = bookings.isEmpty
+                            ? null
+                            : (bookings.first['booking_id'] ?? '').toString();
+                      });
+                    },
+            ),
+            const SizedBox(height: 10),
+            DropdownButtonFormField<String>(
+              value: selectedBookingId,
+              decoration: const InputDecoration(
+                labelText: 'Order / Booking',
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+              items: bookingOptions
+                  .map(
+                    (row) => DropdownMenuItem(
+                      value: (row['booking_id'] ?? '').toString(),
+                      child: Text('${(row['booking_id'] ?? '-').toString()} • ${(row['vehicle_id'] ?? '-').toString()} • ${_money(row['total_rental_amount'])}'),
+                    ),
+                  )
+                  .toList(),
+              onChanged: bookingOptions.isEmpty
+                  ? null
+                  : (value) => setState(() => _billingSelectedBookingId = value),
+            ),
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: _billingSubmitting || selectedUserId == null || selectedBooking == null
+                    ? null
+                    : () => _openBillingDialog(userId: selectedUserId!, booking: selectedBooking!),
+                icon: const Icon(Icons.receipt_long_outlined),
+                label: const Text('Issue bill'),
+              ),
+            ),
+            const SizedBox(height: 12),
+            const Divider(),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'Billing history',
+                    style: TextStyle(fontWeight: FontWeight.w900),
+                  ),
+                ),
+                Text(
+                  '${billingHistoryRows.length} item(s)',
+                  style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Small helper: tap a history card to auto-select that booking before issuing another bill.',
+              style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _InfoPill(label: 'Pending $pendingBillingCount • ${_money(pendingBillingTotal)}'),
+                _InfoPill(label: 'Paid $paidBillingCount • ${_money(paidBillingTotal)}'),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final option in const ['All', 'Pending', 'Paid'])
+                  FilterChip(
+                    label: Text(option),
+                    selected: _billingHistoryFilter == option,
+                    onSelected: (_) => setState(() => _billingHistoryFilter = option),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            if (selectedUserId == null)
+              const Text('Select a user to view billing history.')
+            else if (billingHistoryRows.isEmpty)
+              Text(
+                'No billing history found for this user.',
+                style: TextStyle(color: Colors.grey.shade700),
+              )
+            else
+              Column(
+                children: billingHistoryRows.map((billRow) {
+                  final status = (billRow['status_label'] ?? 'Pending').toString();
+                  final statusColor = _billingHistoryStatusColor(status);
+                  final description = (billRow['description'] ?? '').toString().trim();
+                  final bookingId = (billRow['booking_id'] ?? '').toString().trim();
+                  final paymentMethod = (billRow['payment_method'] ?? '').toString().trim();
+                  final paymentReference = (billRow['payment_reference'] ?? '').toString().trim();
+                  final photoUrl = _billingHistoryPhotoUrl(billRow);
+                  final title = (billRow['title'] ?? '').toString().trim();
+                  final typeLabel = _chargeTypeLabel(billRow['bill_type']);
+                  return InkWell(
+                    borderRadius: BorderRadius.circular(12),
+                    onTap: bookingId.isEmpty
+                        ? null
+                        : () => setState(() => _billingSelectedBookingId = bookingId),
+                    child: Container(
+                      width: double.infinity,
+                      margin: const EdgeInsets.only(bottom: 10),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: statusColor.withOpacity(0.22)),
+                        color: statusColor.withOpacity(0.05),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  title.isNotEmpty ? title : '$typeLabel bill',
+                                  style: const TextStyle(fontWeight: FontWeight.w800),
+                                ),
+                              ),
+                              Text(
+                                _money(billRow['amount']),
+                                style: const TextStyle(fontWeight: FontWeight.w800),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              _InfoPill(label: typeLabel),
+                              _StatusPill(label: status, color: statusColor),
+                              if (bookingId.isNotEmpty) _InfoPill(label: 'Booking $bookingId'),
+                            ],
+                          ),
+                          if (description.isNotEmpty) ...[
+                            const SizedBox(height: 8),
+                            Text(description, style: TextStyle(color: Colors.grey.shade800)),
+                          ],
+                          if (photoUrl != null) ...[
+                            const SizedBox(height: 10),
+                            _BillPhotoDropdown(imageUrl: photoUrl),
+                          ],
+                          if (status == 'Paid' && paymentMethod.isNotEmpty) ...[
+                            const SizedBox(height: 8),
+                            Text(
+                              'Payment method: $paymentMethod',
+                              style: TextStyle(color: Colors.grey.shade800, fontWeight: FontWeight.w600),
+                            ),
+                          ],
+                          if (status == 'Paid' && paymentReference.isNotEmpty) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              'Reference: $paymentReference',
+                              style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBillingSection() {
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_error != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Text(_error!),
+        ),
+      );
+    }
+
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+        children: [
+          _buildBillingCard(),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final grouped = _grouped;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Order Management'),
+        title: Text(_managementSection == 'Orders' ? 'Order Management' : 'Billing Management'),
         centerTitle: true,
         actions: [
           IconButton(onPressed: _load, icon: const Icon(Icons.refresh)),
@@ -858,304 +1477,11 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
       ),
       body: Column(
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
-            child: Column(
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _q,
-                        decoration: const InputDecoration(
-                          prefixIcon: Icon(Icons.search),
-                          hintText: 'Search user id / email / booking / vehicle',
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    DropdownButton<String>(
-                      value: _statusFilter,
-                      items: const [
-                        DropdownMenuItem(value: 'All', child: Text('All')),
-                        DropdownMenuItem(value: 'Incoming', child: Text('Incoming')),
-                        DropdownMenuItem(value: 'Paid', child: Text('Paid')),
-                        DropdownMenuItem(value: 'Active', child: Text('Active')),
-                        DropdownMenuItem(value: 'Inactive', child: Text('Inactive')),
-                        DropdownMenuItem(value: 'Deactive', child: Text('Deactive')),
-                        DropdownMenuItem(value: 'Holding', child: Text('Holding')),
-                        DropdownMenuItem(value: 'Cancelled', child: Text('Cancelled')),
-                      ],
-                      onChanged: (v) => setState(() => _statusFilter = v ?? 'All'),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      for (final option in const [
-                        'All',
-                        'Incoming',
-                        'Paid',
-                        'Active',
-                        'Inactive',
-                        'Deactive',
-                        'Holding',
-                        'Cancelled',
-                      ])
-                        FilterChip(
-                          label: Text(option),
-                          selected: _statusFilter == option,
-                          onSelected: (_) => setState(() => _statusFilter = option),
-                        ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-            child: Builder(
-              builder: (context) {
-                final userIds = _billingFilteredUserIds;
-                final selectedUserId = userIds.contains(_billingSelectedUserId)
-                    ? _billingSelectedUserId
-                    : (userIds.isNotEmpty ? userIds.first : null);
-                final bookingOptions = selectedUserId == null ? <Map<String, dynamic>>[] : _billingBookingsForUser(selectedUserId);
-                final selectedBookingId = bookingOptions.any((row) => (row['booking_id'] ?? '').toString() == _billingSelectedBookingId)
-                    ? _billingSelectedBookingId
-                    : (bookingOptions.isNotEmpty ? (bookingOptions.first['booking_id'] ?? '').toString() : null);
-                final selectedBooking = bookingOptions.cast<Map<String, dynamic>?>().firstWhere(
-                      (row) => (row?['booking_id'] ?? '').toString() == selectedBookingId,
-                      orElse: () => bookingOptions.isEmpty ? null : bookingOptions.first,
-                    );
-
-                return Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text('Billing', style: TextStyle(fontWeight: FontWeight.w900)),
-                        const SizedBox(height: 6),
-                        Text(
-                          'Search user ID, choose the user, then choose the order to issue a bill.',
-                          style: TextStyle(color: Colors.grey.shade700),
-                        ),
-                        const SizedBox(height: 12),
-                        TextField(
-                          controller: _billingUserSearchCtrl,
-                          decoration: const InputDecoration(
-                            prefixIcon: Icon(Icons.search),
-                            hintText: 'Search user ID / email / name',
-                            border: OutlineInputBorder(),
-                            isDense: true,
-                          ),
-                        ),
-                        const SizedBox(height: 10),
-                        DropdownButtonFormField<String>(
-                          value: selectedUserId,
-                          decoration: const InputDecoration(
-                            labelText: 'User',
-                            border: OutlineInputBorder(),
-                            isDense: true,
-                          ),
-                          items: userIds
-                              .map(
-                                (userId) => DropdownMenuItem(
-                                  value: userId,
-                                  child: Text('$userId • ${_userEmail(userId).isEmpty ? _userName(userId) : _userEmail(userId)}'),
-                                ),
-                              )
-                              .toList(),
-                          onChanged: userIds.isEmpty
-                              ? null
-                              : (value) {
-                                  final bookings = value == null ? <Map<String, dynamic>>[] : _billingBookingsForUser(value);
-                                  setState(() {
-                                    _billingSelectedUserId = value;
-                                    _billingSelectedBookingId = bookings.isEmpty
-                                        ? null
-                                        : (bookings.first['booking_id'] ?? '').toString();
-                                  });
-                                },
-                        ),
-                        const SizedBox(height: 10),
-                        DropdownButtonFormField<String>(
-                          value: selectedBookingId,
-                          decoration: const InputDecoration(
-                            labelText: 'Order / Booking',
-                            border: OutlineInputBorder(),
-                            isDense: true,
-                          ),
-                          items: bookingOptions
-                              .map(
-                                (row) => DropdownMenuItem(
-                                  value: (row['booking_id'] ?? '').toString(),
-                                  child: Text('${(row['booking_id'] ?? '-').toString()} • ${(row['vehicle_id'] ?? '-').toString()} • ${_money(row['total_rental_amount'])}'),
-                                ),
-                              )
-                              .toList(),
-                          onChanged: bookingOptions.isEmpty
-                              ? null
-                              : (value) => setState(() => _billingSelectedBookingId = value),
-                        ),
-                        const SizedBox(height: 10),
-                        SizedBox(
-                          width: double.infinity,
-                          child: FilledButton.icon(
-                            onPressed: _billingSubmitting || selectedUserId == null || selectedBooking == null
-                                ? null
-                                : () => _openBillingDialog(userId: selectedUserId!, booking: selectedBooking!),
-                            icon: const Icon(Icons.receipt_long_outlined),
-                            label: const Text('Issue bill'),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
+          _buildManagementToggle(),
           Expanded(
-            child: _loading
-                ? const Center(child: CircularProgressIndicator())
-                : _error != null
-                    ? Center(child: Padding(padding: const EdgeInsets.all(16), child: Text(_error!)))
-                    : RefreshIndicator(
-                        onRefresh: _load,
-                        child: ListView.separated(
-                          padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-                          itemCount: grouped.length,
-                          separatorBuilder: (_, __) => const SizedBox(height: 10),
-                          itemBuilder: (context, i) {
-                            final group = grouped[i];
-                            final email = group.email.isEmpty ? '-' : group.email;
-                            final nameText = group.name.isEmpty ? '' : ' • ${group.name}';
-
-                            return Card(
-                              child: ExpansionTile(
-                                tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                                childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                                title: Text(
-                                  'User ID: ${group.userId.isEmpty ? '-' : group.userId}',
-                                  style: const TextStyle(fontWeight: FontWeight.w900),
-                                ),
-                                subtitle: Text('Gmail: $email$nameText\nOrders: ${group.orders.length} • Total: ${_money(group.totalAmount)}'),
-                                children: group.orders.map((r) {
-                                  final id = (r['booking_id'] ?? '').toString();
-                                  final st = (r['booking_status'] ?? '').toString();
-                                  final statusLabel = _effectiveStatusLabel(r);
-                                  final statusColor = _effectiveStatusColor(r);
-                                  final isPhotoEligible = _isPhotoEligibleOrder(r);
-                                  final amt = _money(r['total_rental_amount']);
-                                  final vid = (r['vehicle_id'] ?? '').toString();
-                                  final bookingDate = (r['booking_date'] ?? '').toString();
-                                  return Container(
-                                    margin: const EdgeInsets.only(top: 8),
-                                    decoration: BoxDecoration(
-                                      borderRadius: BorderRadius.circular(12),
-                                      border: Border.all(color: Colors.grey.shade300),
-                                    ),
-                                    child: ListTile(
-                                      onTap: () => _openDetail(r),
-                                      title: Text(id, style: const TextStyle(fontWeight: FontWeight.w800)),
-                                      subtitle: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
-                                          Text('Vehicle: $vid\nAmount: $amt\nDate: $bookingDate'),
-                                          if (isPhotoEligible && (_hasEvidenceInRow(r, 'pickup') || _hasEvidenceInRow(r, 'dropoff'))) ...[
-                                            const SizedBox(height: 8),
-                                            Wrap(
-                                              spacing: 6,
-                                              runSpacing: 6,
-                                              children: [
-                                                if (_hasEvidenceInRow(r, 'pickup'))
-                                                  _evidenceChip(text: 'Pickup photos', color: Colors.indigo),
-                                                if (_hasEvidenceInRow(r, 'dropoff'))
-                                                  _evidenceChip(text: 'Drop-off photos', color: Colors.deepOrange),
-                                              ],
-                                            ),
-                                          ] else if (!isPhotoEligible) ...[
-                                            const SizedBox(height: 8),
-                                            Text(
-                                              'Pickup / drop-off photos not available for $statusLabel orders.',
-                                              style: TextStyle(
-                                                fontSize: 12,
-                                                color: Colors.grey.shade700,
-                                                fontStyle: FontStyle.italic,
-                                              ),
-                                            ),
-                                          ],
-                                        ],
-                                      ),
-                                      trailing: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Container(
-                                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                            decoration: BoxDecoration(
-                                              color: statusColor.withOpacity(0.12),
-                                              borderRadius: BorderRadius.circular(999),
-                                            ),
-                                            child: Text(
-                                              statusLabel,
-                                              style: TextStyle(
-                                                color: statusColor,
-                                                fontWeight: FontWeight.w800,
-                                              ),
-                                            ),
-                                          ),
-                                          PopupMenuButton<String>(
-                                            onSelected: (v) async {
-                                              if (v == 'view') {
-                                                await _openDetail(r);
-                                                return;
-                                              }
-                                              if (v == 'deactivate') {
-                                                await _deactivate(r);
-                                                return;
-                                              }
-                                              if (v == 'activate') {
-                                                await _activate(r);
-                                                return;
-                                              }
-                                              if (v == 'cancel') {
-                                                await _cancel(r);
-                                                return;
-                                              }
-                                            },
-                                            itemBuilder: (_) {
-                                              final sl = _normStatus(st);
-                                              final isCancelled = sl == 'cancelled';
-                                              final isDeactive = sl == 'deactive';
-                                              return [
-                                                const PopupMenuItem(value: 'view', child: Text('View')),
-                                                if (!isCancelled && !isDeactive)
-                                                  const PopupMenuItem(value: 'deactivate', child: Text('Deactivate')),
-                                                if (!isCancelled && isDeactive)
-                                                  const PopupMenuItem(value: 'activate', child: Text('Activate')),
-                                                if (!isCancelled)
-                                                  const PopupMenuItem(value: 'cancel', child: Text('Cancel')),
-                                              ];
-                                            },
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  );
-                                }).toList(),
-                              ),
-                            );
-                          },
-                        ),
-                      ),
+            child: _managementSection == 'Orders'
+                ? _buildOrdersSection(grouped)
+                : _buildBillingSection(),
           ),
         ],
       ),
@@ -1178,6 +1504,116 @@ class _UserOrderGroup {
   final List<Map<String, dynamic>> orders;
   final double totalAmount;
 }
+
+class _InfoPill extends StatelessWidget {
+  const _InfoPill({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF3F4F6),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: const Color(0xFFE5E7EB)),
+      ),
+      child: Text(
+        label,
+        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+      ),
+    );
+  }
+}
+
+class _StatusPill extends StatelessWidget {
+  const _StatusPill({required this.label, required this.color});
+
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.10),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withOpacity(0.28)),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: color),
+      ),
+    );
+  }
+}
+
+class _BillPhotoDropdown extends StatefulWidget {
+  const _BillPhotoDropdown({required this.imageUrl, this.title = 'Billing picture'});
+
+  final String imageUrl;
+  final String title;
+
+  @override
+  State<_BillPhotoDropdown> createState() => _BillPhotoDropdownState();
+}
+
+class _BillPhotoDropdownState extends State<_BillPhotoDropdown> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade300),
+      ),
+      child: Column(
+        children: [
+          ListTile(
+            dense: true,
+            leading: const Icon(Icons.image_outlined),
+            title: Text(widget.title, style: const TextStyle(fontWeight: FontWeight.w700)),
+            subtitle: Text(_expanded ? 'Tap to hide picture' : 'Tap to view picture'),
+            trailing: Icon(_expanded ? Icons.expand_less : Icons.expand_more),
+            onTap: () => setState(() => _expanded = !_expanded),
+          ),
+          if (_expanded)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: AspectRatio(
+                  aspectRatio: 16 / 9,
+                  child: Image.network(
+                    widget.imageUrl,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => Container(
+                      color: Colors.grey.shade200,
+                      alignment: Alignment.center,
+                      child: const Text('Unable to load picture'),
+                    ),
+                    loadingBuilder: (context, child, progress) {
+                      if (progress == null) return child;
+                      return Container(
+                        color: Colors.grey.shade100,
+                        alignment: Alignment.center,
+                        child: const CircularProgressIndicator(),
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
 class _OrderDetailAdminPage extends StatefulWidget {
   const _OrderDetailAdminPage({required this.row});
 
@@ -1438,6 +1874,18 @@ class _OrderDetailAdminPageState extends State<_OrderDetailAdminPage> {
     }
   }
 
+  String? _extraChargePhotoUrl(Map<String, dynamic> row) {
+    final direct = (row['photo_url'] ?? '').toString().trim();
+    if (direct.isNotEmpty) return direct;
+    final path = (row['photo_path'] ?? '').toString().trim();
+    if (path.isEmpty) return null;
+    try {
+      return _supa.storage.from(_evidenceBucket).getPublicUrl(path);
+    } catch (_) {
+      return null;
+    }
+  }
+
   Widget _buildExtraChargeSection() {
     if (_loadingExtraCharges) {
       return const Padding(
@@ -1486,6 +1934,7 @@ class _OrderDetailAdminPageState extends State<_OrderDetailAdminPage> {
           final paymentReference = ((row['payment_reference'] ?? row['charge_payment_reference']) ?? '')
               .toString()
               .trim();
+          final photoUrl = _extraChargePhotoUrl(row);
           return Container(
             width: double.infinity,
             margin: const EdgeInsets.only(bottom: 10),
@@ -1525,6 +1974,10 @@ class _OrderDetailAdminPageState extends State<_OrderDetailAdminPage> {
                 if (note.isNotEmpty) ...[
                   const SizedBox(height: 6),
                   Text(note, style: TextStyle(color: Colors.grey.shade800, height: 1.3)),
+                ],
+                if (photoUrl != null) ...[
+                  const SizedBox(height: 10),
+                  _BillPhotoDropdown(imageUrl: photoUrl),
                 ],
                 if (status == 'Paid' && paymentMethod != '-') ...[
                   const SizedBox(height: 6),

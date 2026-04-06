@@ -394,7 +394,7 @@ class _HomePageState extends State<HomePage> {
             // Featured
             _FeaturedBanner(
               title: 'Drive from RM6/hour',
-              subtitle: 'Hourly â€¢ Daily â€¢ Weekly â€” flexible plans',
+              subtitle: 'Hourly • Daily • Weekly — flexible plans',
               buttonText: 'Book now',
               onPressed: () async {
                 final ok = await _ensureLicenseBeforeRental();
@@ -663,7 +663,7 @@ class _VehicleCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      '${vehicle.type} â€¢ ${vehicle.seats} seats',
+                      '${vehicle.type} • ${vehicle.seats} seats',
                       style: TextStyle(color: Colors.grey.shade700),
                     ),
                     const SizedBox(height: 10),
@@ -823,7 +823,7 @@ class _VehicleListTile extends StatelessWidget {
         ),
         title: Text(vehicle.title, style: const TextStyle(fontWeight: FontWeight.w800)),
         subtitle: Text(
-          '${vehicle.plate.isEmpty ? '-' : vehicle.plate} â€¢ ${vehicle.location.isEmpty ? '-' : vehicle.location}',
+          '${vehicle.plate.isEmpty ? '-' : vehicle.plate} • ${vehicle.location.isEmpty ? '-' : vehicle.location}',
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
         ),
@@ -926,7 +926,7 @@ class _SearchBar extends StatelessWidget {
           Expanded(
             child: TextField(
               decoration: const InputDecoration(
-                hintText: 'Search by model, location, typeâ€¦',
+                hintText: 'Search by model, location, type...',
                 isDense: true,
                 border: InputBorder.none,
               ),
@@ -1256,7 +1256,7 @@ class _CarListTile extends StatelessWidget {
                       style: const TextStyle(fontWeight: FontWeight.w800)),
                   const SizedBox(height: 3),
                   Text(
-                    '${model.type} â€¢ ${model.seats} seats â€¢ ${model.transmission}',
+                    '${model.type} • ${model.seats} seats • ${model.transmission}',
                     style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
                   ),
                 ],
