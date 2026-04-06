@@ -1,172 +1,147 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-import 'app_user_service.dart';
-
 class InAppNotificationService {
-  InAppNotificationService(this._client);
+  InAppNotificationService(this._supa);
 
-  final SupabaseClient _client;
+  final SupabaseClient _supa;
 
-  String _s(dynamic value) => value == null ? '' : value.toString().trim();
+  static const String tableName = 'notification';
 
-  Future<String?> _currentUserId() async {
-    await AppUserService(_client).ensureAppUser().catchError((_) {});
+  String _shortId(String prefix) {
+    final ms = DateTime.now().millisecondsSinceEpoch.toString();
+    return prefix + ms.substring(ms.length - 8);
+  }
 
-    final auth = _client.auth.currentUser;
-    if (auth == null) return null;
+  DateTime? _dt(dynamic value) {
+    if (value == null) return null;
+    if (value is DateTime) return value.isUtc ? value.toLocal() : value;
+    try {
+      final parsed = DateTime.parse(value.toString());
+      return parsed.isUtc ? parsed.toLocal() : parsed;
+    } catch (_) {
+      return null;
+    }
+  }
 
-    final row = await _client
+  Future<String?> currentUserId() async {
+    final authUser = _supa.auth.currentUser;
+    if (authUser == null) return null;
+    final row = await _supa
         .from('app_user')
         .select('user_id')
-        .eq('auth_uid', auth.id)
+        .eq('auth_uid', authUser.id)
         .maybeSingle();
-
-    if (row == null) return null;
-    return _s((row as Map)['user_id']).isEmpty ? null : _s(row['user_id']);
-  }
-
-  String _newNotificationId() {
-    final now = DateTime.now().millisecondsSinceEpoch;
-    return 'NOT$now';
-  }
-
-  Future<int> unreadCountForCurrentUser() async {
-    final userId = await _currentUserId();
-    if (userId == null) return 0;
-
-    final rows = await _client
-        .from('notification')
-        .select('notification_id')
-        .eq('user_id', userId)
-        .eq('read_status', 'Unread');
-
-    return rows is List ? rows.length : 0;
-  }
-
-  Future<List<Map<String, dynamic>>> getMyNotifications() async {
-    final userId = await _currentUserId();
-    if (userId == null) return const <Map<String, dynamic>>[];
-
-    final rows = await _client
-        .from('notification')
-        .select('*')
-        .eq('user_id', userId)
-        .order('created_at', ascending: false);
-
-    if (rows is! List) return const <Map<String, dynamic>>[];
-    return rows.map((e) => Map<String, dynamic>.from(e as Map)).toList();
-  }
-
-  Future<void> markRead(String notificationId) async {
-    final id = notificationId.trim();
-    if (id.isEmpty) return;
-    await _client
-        .from('notification')
-        .update(<String, dynamic>{'read_status': 'Read'})
-        .eq('notification_id', id);
-  }
-
-  Future<void> markAllReadForCurrentUser() async {
-    final userId = await _currentUserId();
-    if (userId == null) return;
-
-    await _client
-        .from('notification')
-        .update(<String, dynamic>{'read_status': 'Read'})
-        .eq('user_id', userId)
-        .eq('read_status', 'Unread');
+    final userId = (row?['user_id'] ?? '').toString().trim();
+    return userId.isEmpty ? null : userId;
   }
 
   Future<void> createNotification({
     required String userId,
+    required String title,
+    required String message,
+    String type = 'general',
     String? bookingId,
     String? extraChargeId,
-    required String type,
-    String? title,
-    required String message,
   }) async {
-    final cleanUserId = userId.trim();
-    if (cleanUserId.isEmpty) {
-      throw Exception('Missing notification user id.');
-    }
-
-    final cleanTitle = _s(title);
-    final cleanMessage = message.trim();
-    if (cleanMessage.isEmpty) {
-      throw Exception('Notification message cannot be empty.');
-    }
-
-    final payload = <String, dynamic>{
-      'notification_id': _newNotificationId(),
-      'user_id': cleanUserId,
-      'booking_id': _s(bookingId).isEmpty ? null : _s(bookingId),
-      'notification_type': type.trim().isEmpty ? 'general' : type.trim(),
-      'notification_message':
-      cleanTitle.isEmpty ? cleanMessage : '$cleanTitle\n$cleanMessage',
-      'created_at': DateTime.now().toUtc().toIso8601String(),
-      'read_status': 'Unread',
-    };
-
-    try {
-      await _client.from('notification').insert(payload);
-    } on PostgrestException {
-      final fallback = <String, dynamic>{
-        'notification_id': payload['notification_id'],
-        'user_id': cleanUserId,
-        'booking_id': payload['booking_id'],
-        'notification_type': payload['notification_type'],
-        'notification_message': payload['notification_message'],
-      };
-      await _client.from('notification').insert(fallback);
-    }
+    final now = DateTime.now().toUtc().toIso8601String();
+    await _supa.from(tableName).insert({
+      'notification_id': _shortId('NT'),
+      'user_id': userId,
+      'booking_id': bookingId,
+      'extra_charge_id': extraChargeId,
+      'notification_type': type,
+      'title': title,
+      'message': message,
+      'is_read': false,
+      'created_at': now,
+    });
   }
 
-  Future<bool> notificationExists({
+
+  Future<bool> createNotificationOnce({
     required String userId,
-    required String type,
+    required String title,
     required String message,
-  }) async {
-    final cleanUserId = userId.trim();
-    final cleanType = type.trim().isEmpty ? 'general' : type.trim();
-    final cleanMessage = message.trim();
-    if (cleanUserId.isEmpty || cleanMessage.isEmpty) return false;
-
-    final rows = await _client
-        .from('notification')
-        .select('notification_id')
-        .eq('user_id', cleanUserId)
-        .eq('notification_type', cleanType)
-        .eq('notification_message', cleanMessage)
-        .limit(1);
-
-    return rows is List && rows.isNotEmpty;
-  }
-
-  Future<void> createNotificationOnce({
-    required String userId,
+    String type = 'general',
     String? bookingId,
-    required String type,
-    String? title,
-    required String message,
+    String? extraChargeId,
   }) async {
-    final cleanTitle = _s(title);
-    final cleanMessage = message.trim();
-    final storedMessage =
-    cleanTitle.isEmpty ? cleanMessage : '$cleanTitle\n$cleanMessage';
+    final existing = await _supa
+        .from(tableName)
+        .select('notification_id')
+        .eq('user_id', userId)
+        .eq('notification_type', type)
+        .eq('title', title)
+        .eq('message', message)
+        .maybeSingle();
 
-    final exists = await notificationExists(
-      userId: userId,
-      type: type,
-      message: storedMessage,
-    );
-    if (exists) return;
+    if (existing != null) {
+      return false;
+    }
 
     await createNotification(
       userId: userId,
-      bookingId: bookingId,
-      type: type,
       title: title,
       message: message,
+      type: type,
+      bookingId: bookingId,
+      extraChargeId: extraChargeId,
     );
+
+    return true;
+  }
+
+  Future<int> unreadCountForCurrentUser() async {
+    final userId = await currentUserId();
+    if (userId == null) return 0;
+    final rows = await _supa
+        .from(tableName)
+        .select('notification_id')
+        .eq('user_id', userId)
+        .eq('is_read', false);
+    return (rows as List).length;
+  }
+
+  Stream<List<Map<String, dynamic>>> watchCurrentUserNotifications() async* {
+    final userId = await currentUserId();
+    if (userId == null) {
+      yield const <Map<String, dynamic>>[];
+      return;
+    }
+
+    yield* _supa
+        .from(tableName)
+        .stream(primaryKey: ['notification_id'])
+        .eq('user_id', userId)
+        .map((rows) {
+      final list = rows.map((e) => Map<String, dynamic>.from(e)).toList();
+      list.sort((a, b) {
+        final ad = _dt(a['created_at']);
+        final bd = _dt(b['created_at']);
+        if (ad == null && bd == null) return 0;
+        if (ad == null) return 1;
+        if (bd == null) return -1;
+        return bd.compareTo(ad);
+      });
+      return list;
+    });
+  }
+
+  Future<void> markAsRead(String notificationId) async {
+    final id = notificationId.trim();
+    if (id.isEmpty) return;
+    await _supa.from(tableName).update({
+      'is_read': true,
+      'read_at': DateTime.now().toUtc().toIso8601String(),
+    }).eq('notification_id', id);
+  }
+
+  Future<void> markAllAsReadForCurrentUser() async {
+    final userId = await currentUserId();
+    if (userId == null) return;
+    await _supa.from(tableName).update({
+      'is_read': true,
+      'read_at': DateTime.now().toUtc().toIso8601String(),
+    }).eq('user_id', userId).eq('is_read', false);
   }
 }

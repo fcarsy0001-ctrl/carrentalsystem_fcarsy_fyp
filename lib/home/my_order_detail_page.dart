@@ -9,6 +9,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../config/supabase_config.dart';
 import '../services/booking_hold_service.dart';
+import '../services/iot_led_service.dart';
+import '../services/wallet_service.dart';
 
 class MyOrderDetailsPage extends StatefulWidget {
   const MyOrderDetailsPage({
@@ -47,6 +49,9 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
   bool _loadingExtraCharges = false;
   bool _extraChargeTableReady = true;
   List<Map<String, dynamic>> _extraCharges = const [];
+  final WalletService _walletService = WalletService();
+  final IotLedService _iotLedService = const IotLedService();
+  double _walletBalance = 0;
 
   @override
   void initState() {
@@ -62,6 +67,7 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
     _startRealtimeBookingWatch();
     _restartTickerIfNeeded();
     _refreshExtraCharges();
+    _refreshWalletBalance();
   }
 
   @override
@@ -90,6 +96,16 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
     if (path == null || path.trim().isEmpty) return '';
     final safe = path.replaceFirst(RegExp(r'^/+'), '');
     return _supa.storage.from(_evidenceBucket).getPublicUrl(safe);
+  }
+
+  Future<void> _refreshWalletBalance() async {
+    final userId = (_b['user_id'] ?? '').toString().trim();
+    if (userId.isEmpty) return;
+    try {
+      final balance = await _walletService.getWalletBalance(userId);
+      if (!mounted) return;
+      setState(() => _walletBalance = balance);
+    } catch (_) {}
   }
 
   Future<void> _refreshExtraCharges() async {
@@ -153,6 +169,27 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
     return raw;
   }
 
+  String _chargeTypeLabel(dynamic value) {
+    final raw = (value ?? '').toString().trim().toLowerCase();
+    switch (raw) {
+      case 'damage':
+        return 'Damage';
+      case 'scratch':
+        return 'Scratch';
+      case 'overtime':
+      case 'late return':
+      case 'late_return':
+        return 'Late return';
+      case 'cleaning':
+        return 'Cleaning';
+      case 'other':
+        return 'Other';
+      default:
+        final text = (value ?? '').toString().trim();
+        return text.isEmpty ? 'Other' : text[0].toUpperCase() + text.substring(1);
+    }
+  }
+
   String _chargePaymentMethodLabel(dynamic value) {
     switch (_normalizeChargePaymentMethod(value)) {
       case 'card':
@@ -161,6 +198,8 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
         return 'TNG';
       case 'stripe':
         return 'Stripe';
+      case 'wallet':
+        return 'Wallet';
       default:
         final raw = (value ?? '').toString().trim();
         return raw.isEmpty ? '-' : raw;
@@ -195,7 +234,9 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
     final cardExpCtrl = TextEditingController();
     final cardCvvCtrl = TextEditingController();
     final tngRefCtrl = TextEditingController();
-    var method = 'card';
+    final amount = _moneyValue(charge['amount']);
+    final canUseWallet = _walletBalance >= amount;
+    var method = canUseWallet ? 'wallet' : 'card';
 
     final result = await showDialog<Map<String, String>>(
       context: context,
@@ -203,6 +244,23 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
         return StatefulBuilder(
           builder: (context, setLocalState) {
             Widget buildMethodFields() {
+              if (method == 'wallet') {
+                return Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    color: canUseWallet ? Colors.green.shade50 : Colors.grey.shade100,
+                    border: Border.all(color: canUseWallet ? Colors.green.shade200 : Colors.grey.shade300),
+                  ),
+                  child: Text(
+                    canUseWallet
+                        ? 'Wallet balance: ${_money(_walletBalance)}. This bill will be paid directly from wallet.'
+                        : 'Wallet balance is not enough. Current balance: ${_money(_walletBalance)}',
+                    style: TextStyle(color: Colors.grey.shade800),
+                  ),
+                );
+              }
               if (method == 'card') {
                 return Column(
                   children: [
@@ -281,6 +339,24 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
               );
             }
 
+            Widget buildMethodButton({required String value, required String label, required bool enabled}) {
+              final selected = method == value;
+              return Expanded(
+                child: SizedBox(
+                  height: 40,
+                  child: selected
+                      ? FilledButton(
+                          onPressed: enabled ? null : null,
+                          child: Text(label),
+                        )
+                      : OutlinedButton(
+                          onPressed: enabled ? () => setLocalState(() => method = value) : null,
+                          child: Text(label),
+                        ),
+                ),
+              );
+            }
+
             return AlertDialog(
               title: const Text('Pay extra bill'),
               content: SingleChildScrollView(
@@ -292,29 +368,25 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
                       'Amount: ${_money(charge['amount'])}',
                       style: const TextStyle(fontWeight: FontWeight.w800),
                     ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Wallet balance: ${_money(_walletBalance)}',
+                      style: TextStyle(color: Colors.grey.shade700),
+                    ),
                     const SizedBox(height: 12),
                     Row(
                       children: [
-                        Expanded(
-                          child: FilledButton(
-                            onPressed: method == 'card' ? null : () => setLocalState(() => method = 'card'),
-                            child: const Text('Card'),
-                          ),
-                        ),
+                        buildMethodButton(value: 'wallet', label: 'Wallet', enabled: canUseWallet),
                         const SizedBox(width: 8),
-                        Expanded(
-                          child: FilledButton(
-                            onPressed: method == 'tng' ? null : () => setLocalState(() => method = 'tng'),
-                            child: const Text('TNG'),
-                          ),
-                        ),
+                        buildMethodButton(value: 'card', label: 'Card', enabled: true),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        buildMethodButton(value: 'tng', label: 'TNG', enabled: true),
                         const SizedBox(width: 8),
-                        Expanded(
-                          child: FilledButton(
-                            onPressed: method == 'stripe' ? null : () => setLocalState(() => method = 'stripe'),
-                            child: const Text('Stripe'),
-                          ),
-                        ),
+                        buildMethodButton(value: 'stripe', label: 'Stripe', enabled: true),
                       ],
                     ),
                     const SizedBox(height: 12),
@@ -331,7 +403,10 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
                   onPressed: () {
                     String reference;
                     try {
-                      if (method == 'card') {
+                      if (method == 'wallet') {
+                        if (!canUseWallet) throw 'Wallet balance is not enough.';
+                        reference = '';
+                      } else if (method == 'card') {
                         final name = cardNameCtrl.text.trim();
                         final digits = cardNoCtrl.text.replaceAll(RegExp(r'[^0-9]'), '');
                         final exp = cardExpCtrl.text.trim();
@@ -386,26 +461,39 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
     if (payment == null) return;
 
     final paymentMethod = payment['method'] ?? 'card';
-    final paymentReference = payment['reference'] ?? '';
+    var paymentReference = payment['reference'] ?? '';
 
     try {
-      final payload = <String, dynamic>{
-        'charge_status': 'paid',
-        'paid_at': DateTime.now().toUtc().toIso8601String(),
-        'payment_method': paymentMethod,
-        'payment_reference': paymentReference,
-      };
-
-      try {
-        await _supa.from('booking_extra_charge').update(payload).eq('charge_id', chargeId);
-      } on PostgrestException {
-        await _supa.from('booking_extra_charge').update({
+      if (paymentMethod == 'wallet') {
+        final result = await _walletService.payBillWithWallet(
+          userId: (_b['user_id'] ?? '').toString().trim(),
+          billId: chargeId,
+        );
+        final success = result['success'] == true;
+        if (!success) {
+          throw (result['message'] ?? 'Wallet payment failed.').toString();
+        }
+        paymentReference = (result['reference_no'] ?? '').toString();
+      } else {
+        final payload = <String, dynamic>{
           'charge_status': 'paid',
-          'paid_at': payload['paid_at'],
-        }).eq('charge_id', chargeId);
+          'paid_at': DateTime.now().toUtc().toIso8601String(),
+          'payment_method': paymentMethod,
+          'payment_reference': paymentReference,
+        };
+
+        try {
+          await _supa.from('booking_extra_charge').update(payload).eq('charge_id', chargeId);
+        } on PostgrestException {
+          await _supa.from('booking_extra_charge').update({
+            'charge_status': 'paid',
+            'paid_at': payload['paid_at'],
+          }).eq('charge_id', chargeId);
+        }
       }
 
       await _refreshExtraCharges();
+      await _refreshWalletBalance();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -451,6 +539,7 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
           final status = _chargeStatusLabel(row['charge_status']);
           final color = _chargeStatusColor(context, row['charge_status']);
           final type = (row['charge_type'] ?? 'Other').toString();
+          final title = (row['title'] ?? '').toString().trim();
           final note = (row['remark'] ?? row['notes'] ?? '').toString().trim();
           final amount = _money(row['amount']);
           final paymentMethodLabel = _chargePaymentMethodLabel(
@@ -476,7 +565,7 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
                   children: [
                     Expanded(
                       child: Text(
-                        type[0].toUpperCase() + type.substring(1),
+                        title.isNotEmpty ? title : _chargeTypeLabel(type),
                         style: const TextStyle(fontWeight: FontWeight.w800),
                       ),
                     ),
@@ -1097,8 +1186,9 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
       final side = entry.key;
       final file = entry.value;
       final ext = file.extension.toLowerCase();
-      final contentType = ext == 'png' ? 'image/png' : 'image/jpeg';
-      final path = 'orders/$bookingId/$stage/${side}_${DateTime.now().millisecondsSinceEpoch}.$ext';
+      final normalizedExt = ext == 'png' ? 'png' : 'jpg';
+      final contentType = normalizedExt == 'png' ? 'image/png' : 'image/jpeg';
+      final path = 'orders/$bookingId/$stage/${side}_${DateTime.now().millisecondsSinceEpoch}.$normalizedExt';
       await _supa.storage.from(_evidenceBucket).uploadBinary(
         path,
         file.bytes,
@@ -1110,6 +1200,24 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
       );
     }
     return uploaded;
+  }
+
+  String _friendlyEvidenceIssue(Object? error) {
+    final raw = (error ?? '').toString().trim();
+    final lower = raw.toLowerCase();
+    if (lower.isEmpty) {
+      return 'Supabase evidence storage is not ready yet.';
+    }
+    if (lower.contains('bucket') || lower.contains('storage')) {
+      return 'Supabase Storage bucket "booking_evidence" is missing or not allowed yet.';
+    }
+    if (lower.contains('row-level security') || lower.contains('permission') || lower.contains('not authorized') || lower.contains('unauthorized') || lower.contains('42501')) {
+      return 'Supabase policy for booking evidence is blocking upload.';
+    }
+    if (lower.contains('column') || lower.contains('schema') || lower.contains('relation') || lower.contains('booking_evidence')) {
+      return 'Booking evidence table/columns are not fully added in Supabase yet.';
+    }
+    return raw;
   }
 
   Future<void> _saveEvidenceRows(
@@ -1152,11 +1260,13 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
     try {
       Map<String, _UploadedEvidenceAsset> uploadedEvidence = const <String, _UploadedEvidenceAsset>{};
       var evidenceStoredRemotely = false;
+      Object? evidenceError;
       try {
         uploadedEvidence = await _uploadEvidence('pickup', capture);
         evidenceStoredRemotely = uploadedEvidence.isNotEmpty;
-      } catch (_) {
+      } catch (e) {
         evidenceStoredRemotely = false;
+        evidenceError = e;
       }
 
       final bookingId = (_b['booking_id'] ?? '').toString().trim();
@@ -1197,14 +1307,11 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
         _liveNow = DateTime.now();
       });
 
+      final pickupMessage = evidenceStoredRemotely
+          ? 'Pickup completed. Trip is now officially ongoing.'
+          : 'Pickup completed, but photos could not sync to Supabase yet. ${_friendlyEvidenceIssue(evidenceError)} Run booking_evidence_patch.sql first.';
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            evidenceStoredRemotely
-                ? 'Pickup completed. Trip is now officially ongoing.'
-                : 'Pickup completed in demo mode. Evidence stayed on device because booking evidence storage/schema is not ready.',
-          ),
-        ),
+        SnackBar(content: Text(pickupMessage)),
       );
     } catch (e) {
       if (!mounted) return;
@@ -1224,19 +1331,29 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
     if (_processingLifecycleAction) return;
     final bookingId = (_b['booking_id'] ?? '').toString().trim();
     if (bookingId.isEmpty) return;
+
+    final isLocked = value == 'locked';
     setState(() => _processingLifecycleAction = true);
     try {
+      await _iotLedService.setVehicleLock(isLocked: isLocked);
+
       try {
         await _supa.from('booking').update({'lock_demo_state': value}).eq('booking_id', bookingId);
       } catch (_) {
-        // Demo-safe local update.
+        // Keep the UI working even if the DB update is not available.
       }
+
       if (!mounted) return;
       setState(() {
         _b['lock_demo_state'] = value;
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(value == 'unlocked' ? 'Car unlocked (demo).' : 'Car locked (demo).')),
+        SnackBar(content: Text(isLocked ? 'Car locked. LED is ON.' : 'Car unlocked. LED is OFF.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Lock command failed: $e'), backgroundColor: Colors.red),
       );
     } finally {
       if (mounted) {
@@ -1283,11 +1400,13 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
     try {
       Map<String, _UploadedEvidenceAsset> uploadedEvidence = const <String, _UploadedEvidenceAsset>{};
       var evidenceStoredRemotely = false;
+      Object? evidenceError;
       try {
         uploadedEvidence = await _uploadEvidence('dropoff', capture);
         evidenceStoredRemotely = uploadedEvidence.isNotEmpty;
-      } catch (_) {
+      } catch (e) {
         evidenceStoredRemotely = false;
+        evidenceError = e;
       }
 
       final bookingId = (_b['booking_id'] ?? '').toString().trim();
@@ -1335,14 +1454,11 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
       final penaltyText = penalty > 0
           ? ' Overtime penalty: ${_money(penalty)} (1 hour x2 charge, rounded up).'
           : '';
+      final dropoffMessage = evidenceStoredRemotely
+          ? 'Drop-off completed.$penaltyText'
+          : 'Drop-off completed, but photos could not sync to Supabase yet. ${_friendlyEvidenceIssue(evidenceError)} Run booking_evidence_patch.sql first.$penaltyText';
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            evidenceStoredRemotely
-                ? 'Drop-off completed.$penaltyText'
-                : 'Drop-off completed in demo mode. Evidence stayed on device because booking evidence storage/schema is not ready.$penaltyText',
-          ),
-        ),
+        SnackBar(content: Text(dropoffMessage)),
       );
     } catch (e) {
       if (!mounted) return;
@@ -1427,7 +1543,7 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
     if (!_canShowVehicleControl) return const SizedBox.shrink();
     final locked = _lockStateLabel() == 'Locked';
     return _SectionCard(
-      title: 'Demo Car Control',
+      title: 'Car Control',
       trailing: Text(
         _lockStateLabel(),
         style: TextStyle(
@@ -1440,7 +1556,7 @@ class _MyOrderDetailsPageState extends State<MyOrderDetailsPage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Demo buttons only. Connect these later to the real telematics / IoT command service.',
+            'These buttons now send a simple Wi-Fi command to your ESP32. Lock turns the LED on, unlock turns the LED off.',
             style: TextStyle(color: Colors.grey.shade800, height: 1.35),
           ),
           const SizedBox(height: 12),

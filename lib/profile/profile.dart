@@ -6,6 +6,7 @@ import '../services/driver_license_service.dart';
 import '../home/my_orders_page.dart';
 import 'my_vouchers_page.dart';
 import '../support/user_support_page.dart';
+import '../features/profile/presentation/pages/wallet_page.dart';
 import 'driver_license_page.dart';
 import 'profile_info_page.dart';
 
@@ -192,6 +193,18 @@ class _ProfilePageState extends State<ProfilePage> {
                   onTap: () async {
                     await Navigator.of(context).push(
                       MaterialPageRoute(builder: (_) => const MyOrdersPage()),
+                    );
+                  },
+                ),
+                const SizedBox(height: 10),
+
+                _MenuTile(
+                  icon: Icons.account_balance_wallet_outlined,
+                  title: 'My wallet',
+                  subtitle: 'Top up balance and view wallet activity',
+                  onTap: () async {
+                    await Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const WalletPage()),
                     );
                   },
                 ),
