@@ -473,7 +473,9 @@ class _WalletPageState extends State<WalletPage> {
 
   String _billSupportMessage(Map<String, dynamic> bill) {
     final lines = <String>[
-      'I want to appeal / dispute this billing.',
+      'Billing Appeal Request',
+      'Reason: I want to appeal or dispute this billing.',
+      'Requested action: Please review this billing and help me appeal it.',
       '',
       '[BILL_LINK]',
       'Bill Source: ${_s(bill['source']).isEmpty ? 'unknown' : _s(bill['source'])}',
@@ -483,27 +485,23 @@ class _WalletPageState extends State<WalletPage> {
       'Bill Type: ${_billTypeLabel(bill['bill_type'])}',
       'Amount: ${_money(_billAmount(bill))}',
       'Status: ${_billStatus(bill)}',
-      '[/BILL_LINK]',
     ];
 
     final description = _billDescription(bill);
     if (description.isNotEmpty) {
-      lines
-        ..add('')
-        ..add('Bill detail:')
-        ..add(description);
+      lines.add('Bill Detail: $description');
     }
 
     final photoUrl = _billPhotoUrl(bill);
     if (photoUrl != null && photoUrl.isNotEmpty) {
-      lines
-        ..add('')
-        ..add('Billing photo: $photoUrl');
+      lines.add('Billing Photo URL: $photoUrl');
     }
 
-    lines
-      ..add('')
-      ..add('Please review this billing and help me appeal it.');
+    lines.addAll([
+      '[/BILL_LINK]',
+      '',
+      'Please review and respond in this support case.',
+    ]);
     return lines.join('\n');
   }
 

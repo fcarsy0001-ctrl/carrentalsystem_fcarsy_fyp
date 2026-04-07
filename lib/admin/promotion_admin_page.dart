@@ -585,7 +585,22 @@ class _PromotionAdminPageState extends State<PromotionAdminPage> {
 
     final titleCtrl = TextEditingController(text: (initial?['title'] ?? '').toString());
     final msgCtrl = TextEditingController(text: (initial?['message'] ?? '').toString());
-    final promoCodeCtrl = TextEditingController(text: (initial?['promo_code'] ?? '').toString());
+
+    final promoRows = await _loadPromos();
+    final voucherCodes = promoRows
+        .where((row) => _isEffectivelyActive(row))
+        .map((row) => (row['code'] ?? '').toString().trim())
+        .where((code) => code.isNotEmpty)
+        .toSet()
+        .toList()
+      ..sort();
+    String? selectedPromoCode = (initial?['promo_code'] ?? '').toString().trim();
+    if (selectedPromoCode != null && selectedPromoCode.isEmpty) {
+      selectedPromoCode = null;
+    }
+    if (selectedPromoCode != null && !voucherCodes.contains(selectedPromoCode)) {
+      voucherCodes.insert(0, selectedPromoCode);
+    }
 
     var active = (initial?['active'] == null) ? true : (initial?['active'] == true);
 
@@ -626,13 +641,25 @@ class _PromotionAdminPageState extends State<PromotionAdminPage> {
                     decoration: const InputDecoration(labelText: 'Message', border: OutlineInputBorder()),
                   ),
                   const SizedBox(height: 10),
-                  TextField(
-                    controller: promoCodeCtrl,
+                  DropdownButtonFormField<String?>(
+                    value: selectedPromoCode,
                     decoration: const InputDecoration(
-                      labelText: 'Promo code (optional)',
-                      hintText: 'e.g. NEW10',
+                      labelText: 'Voucher (optional)',
                       border: OutlineInputBorder(),
                     ),
+                    items: [
+                      const DropdownMenuItem<String?>(
+                        value: null,
+                        child: Text('No voucher'),
+                      ),
+                      ...voucherCodes.map(
+                        (code) => DropdownMenuItem<String?>(
+                          value: code,
+                          child: Text(code),
+                        ),
+                      ),
+                    ],
+                    onChanged: (value) => setLocal(() => selectedPromoCode = value),
                   ),
                   const SizedBox(height: 10),
                   Row(
@@ -690,7 +717,9 @@ class _PromotionAdminPageState extends State<PromotionAdminPage> {
                         final payload = <String, dynamic>{
                           'title': title,
                           'message': msg,
-                          'promo_code': promoCodeCtrl.text.trim().isEmpty ? null : promoCodeCtrl.text.trim(),
+                          'promo_code': (selectedPromoCode == null || selectedPromoCode!.trim().isEmpty)
+                              ? null
+                              : selectedPromoCode!.trim(),
                           'start_at': start?.toIso8601String(),
                           'end_at': end?.toIso8601String(),
                           'active': active && !_isExpiredRow({'end_at': end?.toIso8601String()}),

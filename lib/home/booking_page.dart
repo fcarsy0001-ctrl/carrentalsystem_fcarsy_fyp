@@ -130,6 +130,12 @@ class _BookingPageState extends State<BookingPage> {
 
   String _s(dynamic value) => value == null ? '' : value.toString().trim();
 
+  bool _isVoucherUsedRow(Map<String, dynamic> row) {
+    final usedBookingId = _s(row['used_booking_id']);
+    final usedAt = _s(row['used_at']);
+    return usedBookingId.isNotEmpty || usedAt.isNotEmpty;
+  }
+
   Future<void> _autoApplyBestVoucher() async {
     if (_loadingBestVoucher || _voucherCode != null || _voucherCtrl.text.trim().isNotEmpty) {
       return;
@@ -142,15 +148,25 @@ class _BookingPageState extends State<BookingPage> {
       final rentalRaw = _rentalSubtotal();
       final optionsByPromoId = <String, Map<String, dynamic>>{};
       final claimedPromoIds = <String>{};
+      final usedPromoIds = <String>{};
 
       for (final row in myVouchers) {
+        final used = _isVoucherUsedRow(row);
+        final rowPromoId = _s(row['promo_id']);
+        if (used && rowPromoId.isNotEmpty) {
+          usedPromoIds.add(rowPromoId);
+        }
+
         final promoRaw = row['promotion'];
         if (promoRaw is! Map) continue;
         final promo = Map<String, dynamic>.from(promoRaw as Map);
-        if (!_isPromoActive(promo)) continue;
-
-        final promoId = _s(row['promo_id']).isEmpty ? _s(promo['promo_id']) : _s(row['promo_id']);
+        final promoId = rowPromoId.isEmpty ? _s(promo['promo_id']) : rowPromoId;
         if (promoId.isEmpty) continue;
+        if (used) {
+          usedPromoIds.add(promoId);
+          continue;
+        }
+        if (!_isPromoActive(promo)) continue;
 
         final discount = _promo.computeDiscount(promo: promo, rentalSubtotal: rentalRaw);
         if (discount <= 0) continue;
@@ -168,7 +184,7 @@ class _BookingPageState extends State<BookingPage> {
 
       for (final promo in activePromos) {
         final promoId = _s(promo['promo_id']);
-        if (promoId.isEmpty || optionsByPromoId.containsKey(promoId)) continue;
+        if (promoId.isEmpty || optionsByPromoId.containsKey(promoId) || usedPromoIds.contains(promoId)) continue;
         if (!_isPromoActive(promo)) continue;
         final discount = _promo.computeDiscount(promo: promo, rentalSubtotal: rentalRaw);
         if (discount <= 0) continue;
@@ -284,13 +300,17 @@ class _BookingPageState extends State<BookingPage> {
     final code = _s(option['code']);
     final promoId = _s(option['promo_id']);
     final discount = ((option['discount'] ?? 0) as num).toDouble();
-    final claimed = option['claimed'] == true;
-
-    if (!claimed && promoId.isNotEmpty) {
+    if (promoId.isNotEmpty) {
       try {
         await _promo.claimVoucher(promoId: promoId);
         option['claimed'] = true;
-      } catch (_) {}
+      } catch (e) {
+        if (!mounted) return;
+        setState(() {
+          _voucherMsg = 'Apply failed: $e';
+        });
+        return;
+      }
     }
 
     setState(() {
@@ -456,7 +476,15 @@ class _BookingPageState extends State<BookingPage> {
     if ((voucherPromoId ?? '').trim().isNotEmpty) {
       try {
         await _promo.claimVoucher(promoId: voucherPromoId!);
-      } catch (_) {}
+      } catch (e) {
+        if (!mounted) return;
+        _clearVoucher();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Voucher can no longer be used: $e')),
+        );
+        setState(() => _submitting = false);
+        return;
+      }
     }
 
     // Create booking (minimal fields to satisfy NOT NULL constraints)

@@ -156,6 +156,13 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
     return (now.isAtSameMomentAs(start) || now.isAfter(start)) && now.isBefore(end);
   }
 
+  bool _isOvertime(Map<String, dynamic> r) {
+    final end = _dt(r['rental_end']);
+    if (end == null) return false;
+    if (_isBlocked(r) || _isActiveHolding(r) || !_hasPickupCompleted(r) || _hasDropoffCompleted(r)) return false;
+    return _liveNow.isAfter(end);
+  }
+
   String _durationText(Map<String, dynamic> r) {
     final start = _dt(r['rental_start']);
     final end = _dt(r['rental_end']);
@@ -724,18 +731,25 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
                       )
                     else
                       ..._ongoing.map(
-                        (r) => _OrderCard(
-                          row: r,
-                          statusText: _hasPickupCompleted(r) ? 'Ongoing' : 'Pickup Ready',
-                          statusColor: _hasPickupCompleted(r) ? Colors.green : Colors.teal,
-                          durationText: _durationText(r),
-                          photoUrlBuilder: _vehiclePhotoPublicUrl,
-                          onTap: () => Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => MyOrderDetailsPage(booking: r),
+                        (r) {
+                          final overtime = _isOvertime(r);
+                          return _OrderCard(
+                            row: r,
+                            statusText: overtime
+                                ? 'OT Warning'
+                                : (_hasPickupCompleted(r) ? 'Ongoing' : 'Pickup Ready'),
+                            statusColor: overtime
+                                ? Colors.deepOrange
+                                : (_hasPickupCompleted(r) ? Colors.green : Colors.teal),
+                            durationText: _durationText(r),
+                            photoUrlBuilder: _vehiclePhotoPublicUrl,
+                            onTap: () => Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => MyOrderDetailsPage(booking: r),
+                              ),
                             ),
-                          ),
-                        ),
+                          );
+                        },
                       ),
                     const SizedBox(height: 14),
                     const _SectionHeader(
@@ -919,12 +933,9 @@ class _OrderCard extends StatelessWidget {
                           ),
                         ),
                         const SizedBox(width: 10),
-                        Text(
-                          statusText,
-                          style: TextStyle(
-                            fontWeight: FontWeight.w900,
-                            color: statusColor,
-                          ),
+                        _OrderStatusBadge(
+                          text: statusText,
+                          color: statusColor,
                         ),
                       ],
                     ),
@@ -1009,6 +1020,58 @@ class _OrderCard extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _OrderStatusBadge extends StatelessWidget {
+  const _OrderStatusBadge({
+    required this.text,
+    required this.color,
+  });
+
+  final String text;
+  final Color color;
+
+  bool get _isWarning {
+    final lower = text.toLowerCase();
+    return lower.contains('ot warning') || lower.contains('overtime');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_isWarning) {
+      return Text(
+        text,
+        style: TextStyle(
+          fontWeight: FontWeight.w900,
+          color: color,
+        ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withOpacity(0.28)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.warning_amber_rounded, size: 14, color: color),
+          const SizedBox(width: 4),
+          Text(
+            text,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w900,
+              color: color,
+            ),
+          ),
+        ],
       ),
     );
   }

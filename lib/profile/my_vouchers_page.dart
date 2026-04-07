@@ -33,8 +33,9 @@ class _MyVouchersPageState extends State<MyVouchersPage> {
   }
 
   bool _isUsed(Map<String, dynamic> uvRow) {
-    final used = uvRow['used_booking_id'];
-    return used != null && used.toString().trim().isNotEmpty;
+    final usedBookingId = (uvRow['used_booking_id'] ?? '').toString().trim();
+    final usedAt = (uvRow['used_at'] ?? '').toString().trim();
+    return usedBookingId.isNotEmpty || usedAt.isNotEmpty;
   }
 
   String _promoTitle(Map<String, dynamic> promo) {
@@ -89,7 +90,6 @@ class _MyVouchersPageState extends State<MyVouchersPage> {
   Widget _statusChip(bool used) {
     return Chip(label: Text(used ? 'Used' : 'Claimed'));
   }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -117,10 +117,16 @@ class _MyVouchersPageState extends State<MyVouchersPage> {
                 }
 
                 final myRows = mySnap.data ?? const [];
+                final usedPromoIds = myRows
+                    .where(_isUsed)
+                    .map((e) => (e['promo_id'] ?? '').toString())
+                    .where((e) => e.isNotEmpty)
+                    .toSet();
                 final claimedPromoIds = myRows
                     .map((e) => (e['promo_id'] ?? '').toString())
                     .where((e) => e.isNotEmpty)
                     .toSet();
+                final visibleMyRows = myRows.where((uv) => !_isUsed(uv)).toList();
 
                 return ListView(
                   padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
@@ -130,26 +136,35 @@ class _MyVouchersPageState extends State<MyVouchersPage> {
                       style: TextStyle(fontWeight: FontWeight.w900),
                     ),
                     const SizedBox(height: 10),
-                    if (myRows.isEmpty)
+                    if (visibleMyRows.isEmpty)
                       Text(
-                        'No claimed vouchers yet.',
+                        myRows.isEmpty
+                            ? 'No claimed vouchers yet.'
+                            : 'No claimed vouchers to show.',
                         style: TextStyle(color: Colors.grey.shade700),
                       )
                     else
                       Column(
-                        children: myRows.map((uv) {
+                        children: visibleMyRows.map((uv) {
                           final promo = (uv['promotion'] is Map)
                               ? Map<String, dynamic>.from(uv['promotion'] as Map)
                               : <String, dynamic>{};
-                          final used = _isUsed(uv);
                           return Card(
                             child: ListTile(
+                              isThreeLine: true,
                               title: Text(
                                 _promoTitle(promo),
                                 style: const TextStyle(fontWeight: FontWeight.w800),
                               ),
-                              subtitle: Text(_promoSubtitle(promo)),
-                              trailing: _statusChip(used),
+                              subtitle: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(_promoSubtitle(promo)),
+                                  const SizedBox(height: 8),
+                                  _statusChip(false),
+                                ],
+                              ),
                             ),
                           );
                         }).toList(),
@@ -174,6 +189,7 @@ class _MyVouchersPageState extends State<MyVouchersPage> {
 
                         final promos = (promoSnap.data ?? const [])
                             .where((p) => (p['promo_id'] ?? '').toString().isNotEmpty)
+                            .where((p) => !usedPromoIds.contains((p['promo_id'] ?? '').toString()))
                             .toList();
 
                         if (promos.isEmpty) {

@@ -238,6 +238,110 @@ class _SupportChatPageState extends State<SupportChatPage> {
     return value.isEmpty || value == '-' ? null : value;
   }
 
+  String? _extractAnyFieldValue(String text, List<String> labels) {
+    for (final label in labels) {
+      final value = _extractFieldValue(text, label);
+      if ((value ?? '').isNotEmpty) return value;
+    }
+    return null;
+  }
+
+  bool _isBillingMetaLine(String line) {
+    final trimmed = line.trim().toLowerCase();
+    if (trimmed.isEmpty) return false;
+    if (trimmed == '[bill_link]' || trimmed == '[/bill_link]') return true;
+    return trimmed.startsWith('bill source:') ||
+        trimmed.startsWith('bill id:') ||
+        trimmed.startsWith('booking id:') ||
+        trimmed.startsWith('bill title:') ||
+        trimmed.startsWith('bill type:') ||
+        trimmed.startsWith('amount:') ||
+        trimmed.startsWith('status:') ||
+        trimmed.startsWith('bill detail:') ||
+        trimmed.startsWith('billing photo url:') ||
+        trimmed.startsWith('billing photo:') ||
+        trimmed.startsWith('reason:') ||
+        trimmed.startsWith('requested action:');
+  }
+
+  _BillAppealMessage? _parseBillAppealMessage(String text) {
+    final normalized = text.replaceAll('\r\n', '\n').trim();
+    if (!normalized.contains('[BILL_LINK]')) return null;
+
+    final lines = normalized.split('\n');
+    final headingLines = <String>[];
+    for (final line in lines) {
+      final trimmed = line.trim();
+      if (trimmed == '[BILL_LINK]') break;
+      if (trimmed.isEmpty) continue;
+      if (_isBillingMetaLine(trimmed)) continue;
+      headingLines.add(trimmed);
+    }
+
+    String? detail = _extractAnyFieldValue(normalized, const ['Bill Detail', 'Bill detail']);
+    if ((detail ?? '').isEmpty) {
+      final startIndex = lines.indexWhere(
+        (line) => line.trim().toLowerCase() == 'bill detail:',
+      );
+      if (startIndex >= 0) {
+        final buffer = <String>[];
+        for (var i = startIndex + 1; i < lines.length; i++) {
+          final current = lines[i].trim();
+          if (current.isEmpty) {
+            if (buffer.isNotEmpty) buffer.add('');
+            continue;
+          }
+          if (_isBillingMetaLine(current)) break;
+          buffer.add(current);
+        }
+        final value = buffer.join('\n').trim();
+        if (value.isNotEmpty) detail = value;
+      }
+    }
+
+    final payload = _BillAppealMessage(
+      heading: headingLines.isEmpty ? 'Billing Appeal Request' : headingLines.join(' '),
+      reason: _extractAnyFieldValue(normalized, const ['Reason']),
+      requestedAction: _extractAnyFieldValue(normalized, const ['Requested action']),
+      billSource: _extractAnyFieldValue(normalized, const ['Bill Source']),
+      billId: _extractAnyFieldValue(normalized, const ['Bill ID']),
+      bookingId: _extractAnyFieldValue(normalized, const ['Booking ID']),
+      billTitle: _extractAnyFieldValue(normalized, const ['Bill Title']),
+      billType: _extractAnyFieldValue(normalized, const ['Bill Type']),
+      amount: _extractAnyFieldValue(normalized, const ['Amount']),
+      status: _extractAnyFieldValue(normalized, const ['Status']),
+      detail: detail,
+      photoUrl: _extractAnyFieldValue(normalized, const ['Billing Photo URL', 'Billing photo', 'Billing Photo']),
+    );
+
+    final hasAnyField = [
+      payload.billSource,
+      payload.billId,
+      payload.bookingId,
+      payload.billTitle,
+      payload.billType,
+      payload.amount,
+      payload.status,
+      payload.detail,
+      payload.photoUrl,
+    ].any((value) => (value ?? '').trim().isNotEmpty);
+
+    return hasAnyField ? payload : null;
+  }
+
+  Widget _buildChatMessageContent(
+    BuildContext context,
+    String message, {
+    required bool isMine,
+    required TextAlign textAlign,
+  }) {
+    final billAppeal = _parseBillAppealMessage(message);
+    if (billAppeal == null) {
+      return Text(message, textAlign: textAlign);
+    }
+    return _BillAppealCard(payload: billAppeal, isMine: isMine);
+  }
+
   Future<Map<String, String>?> _resolveLinkedBillRef() async {
     final ticket = await _service.getTicket(widget.ticketId);
     final messages = await _service.getMessages(widget.ticketId);
@@ -669,8 +773,10 @@ class _SupportChatPageState extends State<SupportChatPage> {
                                                 ),
                                               ),
                                               const SizedBox(height: 6),
-                                              Text(
+                                              _buildChatMessageContent(
+                                                context,
                                                 _s(msg['message']),
+                                                isMine: isMine,
                                                 textAlign: textAlign,
                                               ),
                                               const SizedBox(height: 6),
@@ -737,6 +843,266 @@ class _SupportChatPageState extends State<SupportChatPage> {
             ],
           );
         },
+      ),
+    );
+  }
+}
+
+
+class _BillAppealMessage {
+  const _BillAppealMessage({
+    required this.heading,
+    this.reason,
+    this.requestedAction,
+    this.billSource,
+    this.billId,
+    this.bookingId,
+    this.billTitle,
+    this.billType,
+    this.amount,
+    this.status,
+    this.detail,
+    this.photoUrl,
+  });
+
+  final String heading;
+  final String? reason;
+  final String? requestedAction;
+  final String? billSource;
+  final String? billId;
+  final String? bookingId;
+  final String? billTitle;
+  final String? billType;
+  final String? amount;
+  final String? status;
+  final String? detail;
+  final String? photoUrl;
+}
+
+class _BillAppealCard extends StatelessWidget {
+  const _BillAppealCard({
+    required this.payload,
+    required this.isMine,
+  });
+
+  final _BillAppealMessage payload;
+  final bool isMine;
+
+  bool _hasText(String? value) => (value ?? '').trim().isNotEmpty;
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = isMine ? Theme.of(context).colorScheme.primary : Colors.deepOrange;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.45),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: accent.withOpacity(0.22)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.gavel_rounded, size: 18, color: accent),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  payload.heading,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w900,
+                    fontSize: 14,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (_hasText(payload.reason)) ...[
+            const SizedBox(height: 8),
+            Text(
+              payload.reason!,
+              style: TextStyle(color: Colors.grey.shade800, height: 1.35),
+            ),
+          ],
+          if (_hasText(payload.requestedAction)) ...[
+            const SizedBox(height: 6),
+            Text(
+              payload.requestedAction!,
+              style: TextStyle(color: Colors.grey.shade700, fontSize: 12, height: 1.35),
+            ),
+          ],
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              if (_hasText(payload.amount)) _AppealChip(label: payload.amount!),
+              if (_hasText(payload.status)) _AppealChip(label: payload.status!),
+              if (_hasText(payload.bookingId)) _AppealChip(label: 'Booking ${payload.bookingId!}'),
+            ],
+          ),
+          const SizedBox(height: 10),
+          if (_hasText(payload.billTitle)) _AppealInfoRow(label: 'Bill Title', value: payload.billTitle!),
+          if (_hasText(payload.billType)) _AppealInfoRow(label: 'Bill Type', value: payload.billType!),
+          if (_hasText(payload.billSource)) _AppealInfoRow(label: 'Bill Source', value: payload.billSource!),
+          if (_hasText(payload.billId)) _AppealInfoRow(label: 'Bill ID', value: payload.billId!),
+          if (_hasText(payload.detail)) ...[
+            const SizedBox(height: 8),
+            Text(
+              'Bill Detail',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+                color: Colors.grey.shade700,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              payload.detail!,
+              style: TextStyle(color: Colors.grey.shade900, height: 1.35),
+            ),
+          ],
+          if (_hasText(payload.photoUrl)) ...[
+            const SizedBox(height: 10),
+            _InlineBillPhotoDropdown(
+              imageUrl: payload.photoUrl!,
+              title: 'Billing photo',
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _AppealInfoRow extends StatelessWidget {
+  const _AppealInfoRow({
+    required this.label,
+    required this.value,
+  });
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: RichText(
+        text: TextSpan(
+          style: DefaultTextStyle.of(context).style.copyWith(
+                fontSize: 12.5,
+                color: Colors.grey.shade900,
+              ),
+          children: [
+            TextSpan(
+              text: '$label: ',
+              style: TextStyle(
+                fontWeight: FontWeight.w800,
+                color: Colors.grey.shade700,
+              ),
+            ),
+            TextSpan(text: value),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AppealChip extends StatelessWidget {
+  const _AppealChip({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: Colors.grey.shade300),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+          color: Colors.grey.shade800,
+        ),
+      ),
+    );
+  }
+}
+
+class _InlineBillPhotoDropdown extends StatefulWidget {
+  const _InlineBillPhotoDropdown({
+    required this.imageUrl,
+    required this.title,
+  });
+
+  final String imageUrl;
+  final String title;
+
+  @override
+  State<_InlineBillPhotoDropdown> createState() => _InlineBillPhotoDropdownState();
+}
+
+class _InlineBillPhotoDropdownState extends State<_InlineBillPhotoDropdown> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade300),
+      ),
+      child: Column(
+        children: [
+          ListTile(
+            dense: true,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+            leading: const Icon(Icons.image_outlined),
+            title: Text(widget.title, style: const TextStyle(fontWeight: FontWeight.w700)),
+            subtitle: Text(_expanded ? 'Tap to hide picture' : 'Tap to view picture'),
+            trailing: Icon(_expanded ? Icons.expand_less : Icons.expand_more),
+            onTap: () => setState(() => _expanded = !_expanded),
+          ),
+          if (_expanded)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: AspectRatio(
+                  aspectRatio: 16 / 9,
+                  child: Image.network(
+                    widget.imageUrl,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => Container(
+                      color: Colors.grey.shade200,
+                      alignment: Alignment.center,
+                      child: const Text('Unable to load picture'),
+                    ),
+                    loadingBuilder: (context, child, progress) {
+                      if (progress == null) return child;
+                      return Container(
+                        color: Colors.grey.shade100,
+                        alignment: Alignment.center,
+                        child: const CircularProgressIndicator(),
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }

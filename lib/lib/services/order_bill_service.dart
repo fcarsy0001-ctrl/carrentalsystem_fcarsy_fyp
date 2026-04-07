@@ -6,6 +6,33 @@ class OrderBillService {
 
   final SupabaseClient _supabase;
 
+  static const String _cancelMetaByTag = '[BILL_CANCELLED_BY]';
+  static const String _cancelMetaReasonTag = '[BILL_CANCEL_REASON]';
+
+  String _stripCancelMeta(String value) {
+    final lines = value
+        .split('\n')
+        .where((line) {
+          final trimmed = line.trimLeft();
+          return !trimmed.startsWith(_cancelMetaByTag) && !trimmed.startsWith(_cancelMetaReasonTag);
+        })
+        .toList();
+    return lines.join('\n').trim();
+  }
+
+  String _mergeCancelMeta({
+    required String baseText,
+    required String reason,
+    required String cancelledBy,
+  }) {
+    final cleanBase = _stripCancelMeta(baseText);
+    final parts = <String>[];
+    if (cleanBase.isNotEmpty) parts.add(cleanBase);
+    if (cancelledBy.trim().isNotEmpty) parts.add('$_cancelMetaByTag ${cancelledBy.trim()}');
+    if (reason.trim().isNotEmpty) parts.add('$_cancelMetaReasonTag ${reason.trim()}');
+    return parts.join('\n');
+  }
+
   Future<void> createBill({
     required String orderId,
     required String userId,
@@ -260,9 +287,16 @@ class OrderBillService {
     final cleanCancelledBy = (cancelledBy ?? '').trim();
 
     if (cleanSource == 'booking_extra_charge') {
+      final existingRemark = (bill['remark'] ?? bill['notes'] ?? bill['description'] ?? '')
+          .toString();
       final payload = <String, dynamic>{
         'charge_status': 'cancelled',
         'updated_at': now,
+        'remark': _mergeCancelMeta(
+          baseText: existingRemark,
+          reason: cleanReason,
+          cancelledBy: cleanCancelledBy,
+        ),
       };
       if (cleanReason.isNotEmpty) payload['cancel_reason'] = cleanReason;
       if (cleanCancelledBy.isNotEmpty) payload['cancelled_by'] = cleanCancelledBy;
@@ -271,13 +305,24 @@ class OrderBillService {
       } on PostgrestException {
         await _supabase.from('booking_extra_charge').update({
           'charge_status': 'cancelled',
+          'remark': _mergeCancelMeta(
+            baseText: existingRemark,
+            reason: cleanReason,
+            cancelledBy: cleanCancelledBy,
+          ),
         }).eq('charge_id', cleanBillId);
       }
       return;
     }
 
+    final existingDescription = (bill['description'] ?? '').toString();
     final payload = <String, dynamic>{
       'status': 'Cancelled',
+      'description': _mergeCancelMeta(
+        baseText: existingDescription,
+        reason: cleanReason,
+        cancelledBy: cleanCancelledBy,
+      ),
     };
     if (cleanReason.isNotEmpty) payload['cancel_reason'] = cleanReason;
     if (cleanCancelledBy.isNotEmpty) payload['cancelled_by'] = cleanCancelledBy;
@@ -286,6 +331,11 @@ class OrderBillService {
     } on PostgrestException {
       await _supabase.from('order_bills').update({
         'status': 'Cancelled',
+        'description': _mergeCancelMeta(
+          baseText: existingDescription,
+          reason: cleanReason,
+          cancelledBy: cleanCancelledBy,
+        ),
       }).eq('bill_id', cleanBillId);
     }
   }

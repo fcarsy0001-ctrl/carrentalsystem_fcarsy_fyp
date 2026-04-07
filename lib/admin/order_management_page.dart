@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../services/admin_access_service.dart';
 import '../services/in_app_notification_service.dart';
 import '../services/order_bill_service.dart';
 
@@ -267,15 +268,53 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
     }).toList();
   }
 
+  bool _isBillingEligibleBooking(Map<String, dynamic> row) {
+    return _hasDropoffCompleted(row);
+  }
+
+  String _billingBookingLabel(Map<String, dynamic> row) {
+    final bookingId = (row['booking_id'] ?? '-').toString();
+    final vehicleId = (row['vehicle_id'] ?? '-').toString();
+    final completed = _isBillingEligibleBooking(row);
+    final symbol = completed ? '✓' : '•';
+    final status = completed ? 'Completed' : 'Not completed';
+    return '$symbol $bookingId • $vehicleId • ${_money(row['total_rental_amount'])} • $status';
+  }
+
   List<Map<String, dynamic>> _billingBookingsForUser(String userId) {
     final list = _rows
         .where((row) => (row['user_id'] ?? '').toString().trim() == userId)
+        .where(_isBillingEligibleBooking)
         .map((row) => Map<String, dynamic>.from(row))
         .toList();
     list.sort((a, b) => ((b['booking_date'] ?? '').toString()).compareTo((a['booking_date'] ?? '').toString()));
     return list;
   }
 
+
+  static const String _billCancelMetaByTag = '[BILL_CANCELLED_BY]';
+  static const String _billCancelMetaReasonTag = '[BILL_CANCEL_REASON]';
+
+  String _extractBillCancelMetaValue(String text, String tag) {
+    for (final line in text.split('\n')) {
+      final trimmed = line.trimLeft();
+      if (trimmed.startsWith(tag)) {
+        return trimmed.substring(tag.length).trim();
+      }
+    }
+    return '';
+  }
+
+  String _stripBillCancelMeta(String text) {
+    final lines = text
+        .split('\n')
+        .where((line) {
+          final trimmed = line.trimLeft();
+          return !trimmed.startsWith(_billCancelMetaByTag) && !trimmed.startsWith(_billCancelMetaReasonTag);
+        })
+        .toList();
+    return lines.join('\n').trim();
+  }
 
   Map<String, dynamic> _normalizeBillingHistoryRow(
     Map<String, dynamic> row, {
@@ -291,7 +330,10 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
     map['booking_id'] = (map['booking_id'] ?? map['order_id'] ?? '').toString().trim();
     map['user_id'] = (map['user_id'] ?? '').toString().trim();
     map['title'] = (map['title'] ?? '').toString().trim();
-    map['description'] = (map['remark'] ?? map['notes'] ?? map['description'] ?? '').toString().trim();
+    final rawDescription = (map['remark'] ?? map['notes'] ?? map['description'] ?? '').toString().trim();
+    final cancelReasonFromMeta = _extractBillCancelMetaValue(rawDescription, _billCancelMetaReasonTag);
+    final cancelledByFromMeta = _extractBillCancelMetaValue(rawDescription, _billCancelMetaByTag);
+    map['description'] = _stripBillCancelMeta(rawDescription);
     map['bill_type'] = (map['charge_type'] ?? map['bill_type'] ?? 'other').toString().trim();
     map['status_label'] = normalizedStatus == 'paid'
         ? 'Paid'
@@ -305,6 +347,8 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
     map['photo_path'] = (map['photo_path'] ?? '').toString().trim();
     map['payment_method'] = (map['payment_method'] ?? map['charge_payment_method'] ?? '').toString().trim();
     map['payment_reference'] = (map['payment_reference'] ?? map['charge_payment_reference'] ?? '').toString().trim();
+    map['cancel_reason'] = (map['cancel_reason'] ?? cancelReasonFromMeta).toString().trim();
+    map['cancelled_by'] = (map['cancelled_by'] ?? cancelledByFromMeta).toString().trim();
     map['created_at'] = (map['created_at'] ?? map['issued_at'] ?? map['paid_at'] ?? '').toString().trim();
     map['paid_at'] = (map['paid_at'] ?? '').toString().trim();
     return map;
@@ -371,6 +415,111 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
   }
 
 
+  Future<String> _currentBillingCancelActorName() async {
+    final auth = _supa.auth.currentUser;
+    if (auth == null) return 'Admin/Staff';
+
+    try {
+      final ctx = await AdminAccessService(_supa).getAdminContext();
+      if (ctx.isStaffAdmin) {
+        try {
+          final rows = await _supa
+              .from('staff_admin')
+              .select('sadmin_name,sadmin_email')
+              .eq('auth_uid', auth.id)
+              .limit(1);
+          if (rows is List && rows.isNotEmpty) {
+            final row = Map<String, dynamic>.from(rows.first as Map);
+            final name = (row['sadmin_name'] ?? '').toString().trim();
+            if (name.isNotEmpty) return name;
+            final email = (row['sadmin_email'] ?? auth.email ?? '').toString().trim();
+            if (email.isNotEmpty) return email.split('@').first;
+          }
+        } catch (_) {}
+        final email = (auth.email ?? '').trim();
+        return email.isEmpty ? 'Staff' : email.split('@').first;
+      }
+
+      if (ctx.isAdmin) {
+        try {
+          final rows = await _supa
+              .from('admin')
+              .select('admin_name,admin_email')
+              .eq('auth_uid', auth.id)
+              .limit(1);
+          if (rows is List && rows.isNotEmpty) {
+            final row = Map<String, dynamic>.from(rows.first as Map);
+            final name = (row['admin_name'] ?? '').toString().trim();
+            if (name.isNotEmpty) return name;
+            final email = (row['admin_email'] ?? auth.email ?? '').toString().trim();
+            if (email.isNotEmpty) return email.split('@').first;
+          }
+        } catch (_) {}
+
+        final email = (auth.email ?? '').trim();
+        return email.isEmpty ? 'Admin' : email.split('@').first;
+      }
+    } catch (_) {}
+
+    final email = (auth.email ?? '').trim();
+    return email.isEmpty ? 'Admin/Staff' : email.split('@').first;
+  }
+
+  Future<String?> _promptBillingCancelReason(Map<String, dynamic> row) async {
+    final controller = TextEditingController();
+    String? errorText;
+
+    final result = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setLocalState) => AlertDialog(
+          title: const Text('Cancel billing'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Please fill in the cancel reason for this billing.\n\n${(row['title'] ?? '').toString().trim().isEmpty ? 'Billing' : (row['title'] ?? '').toString().trim()}\nAmount: ${_money(row['amount'])}',
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                maxLines: 3,
+                textInputAction: TextInputAction.done,
+                decoration: InputDecoration(
+                  labelText: 'Cancel reason',
+                  hintText: 'Enter reason',
+                  errorText: errorText,
+                  border: const OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('No'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final reason = controller.text.trim();
+                if (reason.isEmpty) {
+                  setLocalState(() => errorText = 'Reason is required.');
+                  return;
+                }
+                Navigator.of(dialogContext).pop(reason);
+              },
+              child: const Text('Cancel bill'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    controller.dispose();
+    return result;
+  }
+
   Future<void> _cancelBillingHistoryRow(Map<String, dynamic> row) async {
     final status = (row['status_label'] ?? '').toString().trim().toLowerCase();
     if (status == 'paid') {
@@ -380,27 +529,33 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
       return;
     }
 
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Cancel billing'),
-        content: Text(
-          'Are you sure you want to cancel this billing?\n\n${(row['title'] ?? '').toString().trim().isEmpty ? 'Billing' : (row['title'] ?? '').toString().trim()}\nAmount: ${_money(row['amount'])}',
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('No')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Cancel bill')),
-        ],
-      ),
-    );
-    if (ok != true) return;
+    final reason = await _promptBillingCancelReason(row);
+    if (!mounted || reason == null) return;
+
+    final cancelledBy = await _currentBillingCancelActorName();
+    if (!mounted) return;
 
     try {
       await _orderBillService.cancelBill(
         source: (row['history_source'] ?? '').toString().trim(),
         billId: (row['history_id'] ?? '').toString().trim(),
-        reason: 'Cancelled by admin/staff',
+        reason: reason,
+        cancelledBy: cancelledBy,
       );
+      _setStateIfMounted(() {
+        _billingHistoryRows = _billingHistoryRows.map((item) {
+          final sameSource = (item['history_source'] ?? '').toString().trim() ==
+              (row['history_source'] ?? '').toString().trim();
+          final sameId = (item['history_id'] ?? '').toString().trim() ==
+              (row['history_id'] ?? '').toString().trim();
+          if (!sameSource || !sameId) return item;
+          final updated = Map<String, dynamic>.from(item);
+          updated['status_label'] = 'Cancelled';
+          updated['cancel_reason'] = reason;
+          updated['cancelled_by'] = cancelledBy;
+          return updated;
+        }).toList();
+      });
       await _load();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -443,6 +598,17 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
     required String userId,
     required Map<String, dynamic> booking,
   }) async {
+    if (!_isBillingEligibleBooking(booking)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Only completed orders can be billed.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
     final amountCtrl = TextEditingController();
     final reasonCtrl = TextEditingController();
     final picker = ImagePicker();
@@ -486,6 +652,20 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
                         Text('User ID: $userId'),
                         const SizedBox(height: 6),
                         Text('Booking: ${(booking['booking_id'] ?? '-').toString()}'),
+                        const SizedBox(height: 4),
+                        Row(
+                          children: [
+                            const Icon(Icons.check_circle, size: 18, color: Colors.green),
+                            const SizedBox(width: 6),
+                            Text(
+                              'Completed order',
+                              style: TextStyle(
+                                color: Colors.green.shade700,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ],
+                        ),
                         const SizedBox(height: 12),
                         DropdownButtonFormField<String>(
                           value: billType,
@@ -1287,7 +1467,7 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
             const Text('Billing', style: TextStyle(fontWeight: FontWeight.w900)),
             const SizedBox(height: 6),
             Text(
-              'Search user ID, choose the user, then choose the order to issue a bill. Billing history below helps you review older charges before issuing a new one.',
+              'Search user ID, choose the user, then choose a completed order only. Billing history below helps you review older charges before issuing a new one.',
               style: TextStyle(color: Colors.grey.shade700),
             ),
             const SizedBox(height: 12),
@@ -1336,7 +1516,7 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
               ),
               const SizedBox(height: 8),
               Text(
-                'Search above, choose a user from the dropdown, then the bill list will show below.',
+                'Search above, choose a user from the dropdown, then only completed orders will show below.',
                 style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
               ),
             ],
@@ -1344,7 +1524,7 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
             DropdownButtonFormField<String>(
               value: selectedBookingId,
               decoration: const InputDecoration(
-                labelText: 'Order / Booking',
+                labelText: 'Completed Order / Booking',
                 border: OutlineInputBorder(),
                 isDense: true,
               ),
@@ -1352,7 +1532,7 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
                   .map(
                     (row) => DropdownMenuItem(
                       value: (row['booking_id'] ?? '').toString(),
-                      child: Text('${(row['booking_id'] ?? '-').toString()} • ${(row['vehicle_id'] ?? '-').toString()} • ${_money(row['total_rental_amount'])}'),
+                      child: Text(_billingBookingLabel(row)),
                     ),
                   )
                   .toList(),
@@ -1360,6 +1540,30 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
                   ? null
                   : (value) => setState(() => _billingSelectedBookingId = value),
             ),
+            if (selectedUserId != null && bookingOptions.isEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                'This user has no completed order yet, so billing cannot be issued now.',
+                style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
+              ),
+            ] else if (selectedBooking != null) ...[
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Icon(Icons.check_circle, size: 18, color: Colors.green),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'Selected booking is completed and can be billed.',
+                      style: TextStyle(
+                        color: Colors.green.shade700,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
             const SizedBox(height: 10),
             SizedBox(
               width: double.infinity,
@@ -1499,6 +1703,20 @@ class _OrderManagementPageState extends State<OrderManagementPage> {
                             Text(
                               'Reference: $paymentReference',
                               style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
+                            ),
+                          ],
+                          if (status == 'Cancelled' && (billRow['cancelled_by'] ?? '').toString().trim().isNotEmpty) ...[
+                            const SizedBox(height: 8),
+                            Text(
+                              'Cancelled by: ${(billRow['cancelled_by'] ?? '').toString().trim()}',
+                              style: TextStyle(color: Colors.grey.shade800, fontWeight: FontWeight.w600),
+                            ),
+                          ],
+                          if (status == 'Cancelled' && (billRow['cancel_reason'] ?? '').toString().trim().isNotEmpty) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              'Reason: ${(billRow['cancel_reason'] ?? '').toString().trim()}',
+                              style: TextStyle(color: Colors.grey.shade700),
                             ),
                           ],
                           if (status == 'Pending') ...[
