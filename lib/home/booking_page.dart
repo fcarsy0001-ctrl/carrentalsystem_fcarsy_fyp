@@ -137,9 +137,11 @@ class _BookingPageState extends State<BookingPage> {
 
     setState(() => _loadingBestVoucher = true);
     try {
-      final myVouchers = await _promo.fetchAvailableMyVouchers();
+      final myVouchers = await _promo.fetchMyVouchers();
+      final activePromos = await _promo.fetchActivePromotions();
       final rentalRaw = _rentalSubtotal();
       final optionsByPromoId = <String, Map<String, dynamic>>{};
+      final claimedPromoIds = <String>{};
 
       for (final row in myVouchers) {
         final promoRaw = row['promotion'];
@@ -153,6 +155,7 @@ class _BookingPageState extends State<BookingPage> {
         final discount = _promo.computeDiscount(promo: promo, rentalSubtotal: rentalRaw);
         if (discount <= 0) continue;
 
+        claimedPromoIds.add(promoId);
         optionsByPromoId[promoId] = {
           'promo_id': promoId,
           'code': _s(promo['code']),
@@ -160,6 +163,23 @@ class _BookingPageState extends State<BookingPage> {
           'promotion': promo,
           'discount': discount,
           'claimed': true,
+        };
+      }
+
+      for (final promo in activePromos) {
+        final promoId = _s(promo['promo_id']);
+        if (promoId.isEmpty || optionsByPromoId.containsKey(promoId)) continue;
+        if (!_isPromoActive(promo)) continue;
+        final discount = _promo.computeDiscount(promo: promo, rentalSubtotal: rentalRaw);
+        if (discount <= 0) continue;
+
+        optionsByPromoId[promoId] = {
+          'promo_id': promoId,
+          'code': _s(promo['code']),
+          'title': _s(promo['title']),
+          'promotion': promo,
+          'discount': discount,
+          'claimed': claimedPromoIds.contains(promoId),
         };
       }
 
@@ -179,8 +199,8 @@ class _BookingPageState extends State<BookingPage> {
         _voucherPromoId = _s(best['promo_id']).isEmpty ? null : _s(best['promo_id']);
         _voucherDiscount = discount;
         _voucherMsg = code.isEmpty
-            ? 'Best claimed voucher auto applied: -RM${discount.toStringAsFixed(2)}'
-            : 'Best claimed voucher auto applied: $code (-RM${discount.toStringAsFixed(2)})';
+            ? 'Best voucher auto applied: -RM${discount.toStringAsFixed(2)}'
+            : 'Best voucher auto applied: $code (-RM${discount.toStringAsFixed(2)})';
       });
     } catch (_) {
       // Keep checkout smooth even if voucher auto-fill fails.
@@ -206,39 +226,27 @@ class _BookingPageState extends State<BookingPage> {
     });
 
     try {
-      final myVouchers = await _promo.fetchAvailableMyVouchers();
-      Map<String, dynamic>? matchedVoucher;
-      Map<String, dynamic>? promo;
-
-      for (final row in myVouchers) {
-        final promoRaw = row['promotion'];
-        if (promoRaw is! Map) continue;
-        final currentPromo = Map<String, dynamic>.from(promoRaw as Map);
-        final promoCode = _s(currentPromo['code']);
-        if (promoCode.isNotEmpty && promoCode.toLowerCase() == code.toLowerCase()) {
-          matchedVoucher = row;
-          promo = currentPromo;
-          break;
-        }
-      }
-
+      final promo = await _promo.getPromotionByCode(code);
       if (promo == null) {
         setState(() {
           _voucherCode = null;
           _voucherPromoId = null;
           _voucherDiscount = 0;
-          _voucherMsg = 'Voucher not found in your claimed available vouchers.';
+          _voucherMsg = 'Invalid voucher.';
         });
         return;
       }
 
-      final selectedPromo = promo;
-      final promoId = _s(matchedVoucher?['promo_id']).isEmpty
-          ? _s(selectedPromo['promo_id'])
-          : _s(matchedVoucher?['promo_id']);
-      final discount = _promo.computeDiscount(promo: selectedPromo, rentalSubtotal: rentalRaw);
+      final promoData = Map<String, dynamic>.from(promo);
+      final promoId = (promoData['promo_id'] ?? '').toString();
+      if (promoId.isNotEmpty) {
+        // claim best-effort (so user can see in My Vouchers)
+        await _promo.claimVoucher(promoId: promoId);
+      }
+
+      final discount = _promo.computeDiscount(promo: promoData, rentalSubtotal: rentalRaw);
       if (discount <= 0) {
-        final min = selectedPromo['min_spend'];
+        final min = promoData['min_spend'];
         final minSpend = (min is num)
             ? min.toDouble()
             : double.tryParse((min ?? '0').toString()) ?? 0;
@@ -253,8 +261,9 @@ class _BookingPageState extends State<BookingPage> {
         return;
       }
 
+      final appliedCode = (promoData['code'] ?? code).toString();
       setState(() {
-        _voucherCode = (selectedPromo['code'] ?? code).toString();
+        _voucherCode = appliedCode;
         _voucherPromoId = promoId;
         _voucherDiscount = discount;
         _voucherMsg = 'Applied: ${_voucherCode ?? code} (-RM${discount.toStringAsFixed(2)})';
@@ -275,6 +284,15 @@ class _BookingPageState extends State<BookingPage> {
     final code = _s(option['code']);
     final promoId = _s(option['promo_id']);
     final discount = ((option['discount'] ?? 0) as num).toDouble();
+    final claimed = option['claimed'] == true;
+
+    if (!claimed && promoId.isNotEmpty) {
+      try {
+        await _promo.claimVoucher(promoId: promoId);
+        option['claimed'] = true;
+      } catch (_) {}
+    }
+
     setState(() {
       _voucherCtrl.text = code;
       _voucherCode = code.isEmpty ? null : code;
@@ -433,6 +451,12 @@ class _BookingPageState extends State<BookingPage> {
       );
       setState(() => _submitting = false);
       return;
+    }
+
+    if ((voucherPromoId ?? '').trim().isNotEmpty) {
+      try {
+        await _promo.claimVoucher(promoId: voucherPromoId!);
+      } catch (_) {}
     }
 
     // Create booking (minimal fields to satisfy NOT NULL constraints)
@@ -760,7 +784,7 @@ class _BookingPageState extends State<BookingPage> {
                         child: TextField(
                           controller: _voucherCtrl,
                           decoration: InputDecoration(
-                            hintText: 'Enter voucher code or pick from claimed vouchers',
+                            hintText: 'Enter voucher code or pick below',
                             border: const OutlineInputBorder(),
                             suffixIcon: _voucherCode == null
                                 ? null

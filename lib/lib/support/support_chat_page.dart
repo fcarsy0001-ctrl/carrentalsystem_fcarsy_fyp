@@ -273,32 +273,41 @@ class _SupportChatPageState extends State<SupportChatPage> {
         throw Exception('No linked billing details were found in this support case.');
       }
 
+      final billSource = _s(billRef['source']);
+      final billId = _s(billRef['bill_id']);
       final bill = await _orderBillService.getBillBySourceAndId(
-        source: _s(billRef['source']),
-        billId: _s(billRef['bill_id']),
+        source: billSource,
+        billId: billId,
       );
       if (bill == null) {
         throw Exception('Billing record not found.');
       }
 
       if (!mounted) return;
+
       final title = _s(bill['title']).isEmpty ? 'Related billing' : _s(bill['title']);
       final amountValue = bill['amount'];
       final amountText = amountValue is num
           ? 'RM ${amountValue.toDouble().toStringAsFixed(2)}'
           : '-';
+      final dialogMessage = [
+        'Cancel this billing for the user?',
+        '',
+        title,
+        'Amount: $amountText',
+        'Bill ID: $billId',
+      ].join('\n');
+
       final ok = await showDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(
           title: const Text('Cancel billing'),
-          content: Text(
-            'Cancel this billing for the user?\n\n'
-            '$title\n'
-            'Amount: $amountText\n'
-            'Bill ID: ${_s(billRef['bill_id'])}',
-          ),
+          content: Text(dialogMessage),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('No')),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('No'),
+            ),
             FilledButton(
               onPressed: () => Navigator.pop(ctx, true),
               child: const Text('Cancel billing'),
@@ -309,14 +318,16 @@ class _SupportChatPageState extends State<SupportChatPage> {
       if (ok != true) return;
 
       await _orderBillService.cancelBill(
-        source: _s(billRef['source']),
-        billId: _s(billRef['bill_id']),
+        source: billSource,
+        billId: billId,
         reason: 'Cancelled after support review',
       );
+
+      final cancelNotice =
+          'Billing $billId has been cancelled by admin/staff after reviewing this appeal.';
       await _service.sendMessage(
         ticketId: widget.ticketId,
-        message:
-            'Billing ${_s(billRef['bill_id'])} has been cancelled by admin/staff after reviewing this appeal.',
+        message: cancelNotice,
       );
 
       if (!mounted) return;
@@ -329,7 +340,9 @@ class _SupportChatPageState extends State<SupportChatPage> {
         SnackBar(content: Text('Cancel billing failed: $e'), backgroundColor: Colors.red),
       );
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) {
+        setState(() => _busy = false);
+      }
     }
   }
 

@@ -27,23 +27,10 @@ SupabaseClient get supabase => Supabase.instance.client;
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  try {
-    if (Firebase.apps.isEmpty) {
-      await Firebase.initializeApp(
-        options: DefaultFirebaseOptions.currentPlatform,
-      );
-    } else {
-      Firebase.app();
-    }
-  } on FirebaseException catch (error) {
-    if (error.code != 'duplicate-app') {
-      rethrow;
-    }
-  } catch (error) {
-    final text = error.toString().toLowerCase();
-    if (!text.contains('duplicate-app')) {
-      rethrow;
-    }
+  if (Firebase.apps.isEmpty) {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
   }
 
   await Supabase.initialize(
@@ -538,7 +525,6 @@ class _GateResult {
   factory _GateResult.disabled(String message) =>
       _GateResult._(_GateKind.disabled, disabledMessage: message);
 }
-
 
 
 
