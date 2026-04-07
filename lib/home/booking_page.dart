@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -6,6 +7,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'contract_page.dart';
 import '../services/booking_availability_service.dart';
 import '../services/promotion_service.dart';
+import '../shell/main_shell.dart';
 
 class BookingPage extends StatefulWidget {
   const BookingPage({
@@ -67,6 +69,7 @@ class _BookingPageState extends State<BookingPage> {
   String? _voucherMsg;
   bool _applyingVoucher = false;
   bool _loadingBestVoucher = false;
+  List<Map<String, dynamic>> _voucherOptions = const [];
 
   final List<_InsuranceOption> _options = const [
     _InsuranceOption('Basic coverage', 0),
@@ -114,8 +117,14 @@ class _BookingPageState extends State<BookingPage> {
     final now = DateTime.now();
     final start = DateTime.tryParse(_s(promo['start_at']));
     final end = DateTime.tryParse(_s(promo['end_at']));
-    if (start != null && now.isBefore(start)) return false;
-    if (end != null && now.isAfter(end)) return false;
+    if (start != null) {
+      final startOfDay = DateTime(start.year, start.month, start.day);
+      if (now.isBefore(startOfDay)) return false;
+    }
+    if (end != null) {
+      final endOfDay = DateTime(end.year, end.month, end.day, 23, 59, 59, 999);
+      if (now.isAfter(endOfDay)) return false;
+    }
     return true;
   }
 
@@ -128,44 +137,50 @@ class _BookingPageState extends State<BookingPage> {
 
     setState(() => _loadingBestVoucher = true);
     try {
-      final myVouchers = await _promo.fetchMyVouchers();
-      if (myVouchers.isEmpty) return;
-
+      final myVouchers = await _promo.fetchAvailableMyVouchers();
       final rentalRaw = _rentalSubtotal();
-      Map<String, dynamic>? bestPromo;
-      String? bestPromoId;
-      double bestDiscount = 0;
+      final optionsByPromoId = <String, Map<String, dynamic>>{};
 
       for (final row in myVouchers) {
-        final usedBookingId = _s(row['used_booking_id']);
-        final usedAt = _s(row['used_at']);
-        if (usedBookingId.isNotEmpty || usedAt.isNotEmpty) continue;
-
         final promoRaw = row['promotion'];
         if (promoRaw is! Map) continue;
         final promo = Map<String, dynamic>.from(promoRaw as Map);
         if (!_isPromoActive(promo)) continue;
 
+        final promoId = _s(row['promo_id']).isEmpty ? _s(promo['promo_id']) : _s(row['promo_id']);
+        if (promoId.isEmpty) continue;
+
         final discount = _promo.computeDiscount(promo: promo, rentalSubtotal: rentalRaw);
         if (discount <= 0) continue;
-        if (discount > bestDiscount) {
-          bestDiscount = discount;
-          bestPromo = promo;
-          bestPromoId = _s(row['promo_id']).isEmpty ? _s(promo['promo_id']) : _s(row['promo_id']);
-        }
+
+        optionsByPromoId[promoId] = {
+          'promo_id': promoId,
+          'code': _s(promo['code']),
+          'title': _s(promo['title']),
+          'promotion': promo,
+          'discount': discount,
+          'claimed': true,
+        };
       }
 
-      if (!mounted || bestPromo == null || bestDiscount <= 0) return;
+      final options = optionsByPromoId.values.toList()
+        ..sort((a, b) => (((b['discount'] ?? 0) as num).toDouble()).compareTo((((a['discount'] ?? 0) as num).toDouble())));
 
-      final code = _s(bestPromo['code']);
+      if (!mounted) return;
+      setState(() => _voucherOptions = options);
+      if (options.isEmpty) return;
+
+      final best = options.first;
+      final code = _s(best['code']);
+      final discount = ((best['discount'] ?? 0) as num).toDouble();
       setState(() {
         _voucherCtrl.text = code;
         _voucherCode = code.isEmpty ? null : code;
-        _voucherPromoId = bestPromoId;
-        _voucherDiscount = bestDiscount;
+        _voucherPromoId = _s(best['promo_id']).isEmpty ? null : _s(best['promo_id']);
+        _voucherDiscount = discount;
         _voucherMsg = code.isEmpty
-            ? 'Best voucher auto applied: -RM${bestDiscount.toStringAsFixed(2)}'
-            : 'Best voucher auto applied: $code (-RM${bestDiscount.toStringAsFixed(2)})';
+            ? 'Best claimed voucher auto applied: -RM${discount.toStringAsFixed(2)}'
+            : 'Best claimed voucher auto applied: $code (-RM${discount.toStringAsFixed(2)})';
       });
     } catch (_) {
       // Keep checkout smooth even if voucher auto-fill fails.
@@ -191,33 +206,46 @@ class _BookingPageState extends State<BookingPage> {
     });
 
     try {
-      final promo = await _promo.getPromotionByCode(code);
+      final myVouchers = await _promo.fetchAvailableMyVouchers();
+      Map<String, dynamic>? matchedVoucher;
+      Map<String, dynamic>? promo;
+
+      for (final row in myVouchers) {
+        final promoRaw = row['promotion'];
+        if (promoRaw is! Map) continue;
+        final currentPromo = Map<String, dynamic>.from(promoRaw as Map);
+        final promoCode = _s(currentPromo['code']);
+        if (promoCode.isNotEmpty && promoCode.toLowerCase() == code.toLowerCase()) {
+          matchedVoucher = row;
+          promo = currentPromo;
+          break;
+        }
+      }
+
       if (promo == null) {
         setState(() {
           _voucherCode = null;
           _voucherPromoId = null;
           _voucherDiscount = 0;
-          _voucherMsg = 'Invalid voucher.';
+          _voucherMsg = 'Voucher not found in your claimed available vouchers.';
         });
         return;
       }
 
-      final promoId = (promo['promo_id'] ?? '').toString();
-      if (promoId.isNotEmpty) {
-        // claim best-effort (so user can see in My Vouchers)
-        await _promo.claimVoucher(promoId: promoId);
-      }
-
-      final discount = _promo.computeDiscount(promo: promo, rentalSubtotal: rentalRaw);
+      final selectedPromo = promo;
+      final promoId = _s(matchedVoucher?['promo_id']).isEmpty
+          ? _s(selectedPromo['promo_id'])
+          : _s(matchedVoucher?['promo_id']);
+      final discount = _promo.computeDiscount(promo: selectedPromo, rentalSubtotal: rentalRaw);
       if (discount <= 0) {
+        final min = selectedPromo['min_spend'];
+        final minSpend = (min is num)
+            ? min.toDouble()
+            : double.tryParse((min ?? '0').toString()) ?? 0;
         setState(() {
           _voucherCode = null;
           _voucherPromoId = null;
           _voucherDiscount = 0;
-          final min = promo['min_spend'];
-          final minSpend = (min is num)
-              ? min.toDouble()
-              : double.tryParse((min ?? '0').toString()) ?? 0;
           _voucherMsg = minSpend > 0
               ? 'Min spend RM${minSpend.toStringAsFixed(0)} not reached.'
               : 'Voucher not applicable.';
@@ -226,10 +254,10 @@ class _BookingPageState extends State<BookingPage> {
       }
 
       setState(() {
-        _voucherCode = (promo['code'] ?? code).toString();
+        _voucherCode = (selectedPromo['code'] ?? code).toString();
         _voucherPromoId = promoId;
         _voucherDiscount = discount;
-        _voucherMsg = 'Applied: -RM${discount.toStringAsFixed(2)}';
+        _voucherMsg = 'Applied: ${_voucherCode ?? code} (-RM${discount.toStringAsFixed(2)})';
       });
     } catch (e) {
       setState(() {
@@ -242,12 +270,35 @@ class _BookingPageState extends State<BookingPage> {
     }
   }
 
+
+  Future<void> _applyVoucherOption(Map<String, dynamic> option) async {
+    final code = _s(option['code']);
+    final promoId = _s(option['promo_id']);
+    final discount = ((option['discount'] ?? 0) as num).toDouble();
+    setState(() {
+      _voucherCtrl.text = code;
+      _voucherCode = code.isEmpty ? null : code;
+      _voucherPromoId = promoId.isEmpty ? null : promoId;
+      _voucherDiscount = discount;
+      _voucherMsg = code.isEmpty
+          ? 'Voucher applied: -RM${discount.toStringAsFixed(2)}'
+          : 'Voucher applied: $code (-RM${discount.toStringAsFixed(2)})';
+    });
+  }
+
+  void _goHome() {
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const MainShell()),
+      (route) => false,
+    );
+  }
+
   void _clearVoucher() {
     setState(() {
       _voucherCode = null;
       _voucherPromoId = null;
       _voucherDiscount = 0;
-      _voucherMsg = null;
+      _voucherMsg = 'Voucher removed.';
       _voucherCtrl.clear();
     });
   }
@@ -421,10 +472,6 @@ class _BookingPageState extends State<BookingPage> {
       return;
     }
 
-    // Mark voucher used (best-effort)
-    if ((voucherPromoId ?? '').trim().isNotEmpty && (voucherCode ?? '').trim().isNotEmpty) {
-      await _promo.markVoucherUsed(promoId: voucherPromoId!, bookingId: bookingId);
-    }
 
     // Create contract row (required fields)
     // Keep contract_id <= 10 chars as well.
@@ -433,7 +480,20 @@ class _BookingPageState extends State<BookingPage> {
       await _supa.from('contract').insert({
         'contract_id': contractId,
         'booking_id': bookingId,
-        'contract_pdf': 'IN_APP_CONTRACT',
+        'contract_pdf': jsonEncode({
+          'pricing': {
+            'rentalSubtotal': rentalSubtotal,
+            'voucherCode': voucherCode,
+            'voucherPromoId': voucherPromoId,
+            'voucherDiscount': voucherDiscount,
+            'insuranceTotal': insuranceTotal,
+            'selectedInsurance': _selectedInsuranceNames(),
+            'serviceFee': serviceFee,
+            'sst': sst,
+            'securityDeposit': _securityDeposit,
+            'subTotal': subTotal,
+          },
+        }),
         'contract_status': 'Incomplete',
         'otp_code': '000000',
         'otp_expiry': now.add(const Duration(minutes: 10)).toIso8601String(),
@@ -468,6 +528,7 @@ class _BookingPageState extends State<BookingPage> {
           // Pricing breakdown (passed through to Payment page)
           rentalSubtotal: rentalSubtotal,
           voucherCode: voucherCode,
+          voucherPromoId: voucherPromoId,
           voucherDiscount: voucherDiscount,
           insuranceTotal: insuranceTotal,
           selectedInsurance: _selectedInsuranceNames(),
@@ -545,6 +606,20 @@ class _BookingPageState extends State<BookingPage> {
             child: ListView(
               padding: const EdgeInsets.only(bottom: 16),
               children: [
+            _sectionCard(
+              title: 'Checkout Progress',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Step 1/3 • Checkout details', style: TextStyle(fontWeight: FontWeight.w800)),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Your 15-minute hold starts when you press Proceed. After that, you will continue to signing and payment.',
+                    style: TextStyle(color: Colors.grey.shade700),
+                  ),
+                ],
+              ),
+            ),
             _sectionCard(
               title: 'Holding Booking Car Details',
               child: Column(
@@ -642,26 +717,64 @@ class _BookingPageState extends State<BookingPage> {
             ),
 
             _sectionCard(
-              title: 'Voucher (auto fill if available)',
+              title: 'Voucher',
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  if (_voucherOptions.isNotEmpty) ...[
+                    DropdownButtonFormField<String>(
+                      value: _voucherCode != null && _voucherOptions.any((row) => _s(row['code']) == _voucherCode)
+                          ? _voucherCode
+                          : null,
+                      decoration: const InputDecoration(
+                        labelText: 'My vouchers',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      items: _voucherOptions
+                          .map(
+                            (row) => DropdownMenuItem<String>(
+                              value: _s(row['code']),
+                              child: Text(
+                                '${_s(row['code']).isEmpty ? 'Voucher' : _s(row['code'])} • -RM${(((row['discount'] ?? 0) as num).toDouble()).toStringAsFixed(2)}',
+                              ),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (value) {
+                        if (value == null) return;
+                        final option = _voucherOptions.firstWhere(
+                          (row) => _s(row['code']) == value,
+                          orElse: () => <String, dynamic>{},
+                        );
+                        if (option.isNotEmpty) {
+                          _applyVoucherOption(option);
+                        }
+                      },
+                    ),
+                    const SizedBox(height: 10),
+                  ],
                   Row(
                     children: [
                       Expanded(
                         child: TextField(
                           controller: _voucherCtrl,
-                          decoration: const InputDecoration(
-                            hintText: 'Enter voucher code',
-                            border: OutlineInputBorder(),
+                          decoration: InputDecoration(
+                            hintText: 'Enter voucher code or pick from claimed vouchers',
+                            border: const OutlineInputBorder(),
+                            suffixIcon: _voucherCode == null
+                                ? null
+                                : IconButton(
+                                    tooltip: 'Remove voucher',
+                                    onPressed: _clearVoucher,
+                                    icon: const Icon(Icons.close),
+                                  ),
                           ),
                         ),
                       ),
                       const SizedBox(width: 10),
                       TextButton(
-                        onPressed: _applyingVoucher
-                            ? null
-                            : () => _applyVoucher(rentalRaw),
+                        onPressed: _applyingVoucher ? null : () => _applyVoucher(rentalRaw),
                         child: _applyingVoucher
                             ? const SizedBox(
                                 width: 16,
@@ -675,22 +788,11 @@ class _BookingPageState extends State<BookingPage> {
                   if ((_voucherCode ?? '').isNotEmpty || (_voucherMsg ?? '').isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(top: 8),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              _voucherCode != null
-                                  ? 'Applied: $_voucherCode (-RM${_voucherDiscount.toStringAsFixed(2)})'
-                                  : (_voucherMsg ?? ''),
-                              style: TextStyle(color: Colors.grey.shade700),
-                            ),
-                          ),
-                          if (_voucherCode != null)
-                            TextButton(
-                              onPressed: _clearVoucher,
-                              child: const Text('Clear'),
-                            ),
-                        ],
+                      child: Text(
+                        _voucherCode != null
+                            ? 'Applied: $_voucherCode (-RM${_voucherDiscount.toStringAsFixed(2)})'
+                            : (_voucherMsg ?? ''),
+                        style: TextStyle(color: Colors.grey.shade700),
                       ),
                     ),
                 ],
@@ -755,7 +857,7 @@ class _BookingPageState extends State<BookingPage> {
                     width: double.infinity,
                     height: 46,
                     child: OutlinedButton(
-                      onPressed: () => Navigator.of(context).pop(),
+                      onPressed: _goHome,
                       child: const Text('Cancel'),
                     ),
                   ),

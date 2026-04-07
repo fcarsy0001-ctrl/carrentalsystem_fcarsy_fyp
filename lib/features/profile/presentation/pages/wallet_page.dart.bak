@@ -1,0 +1,201 @@
+import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../../../../services/order_bill_service.dart';
+import '../../../../services/wallet_service.dart';
+
+class WalletPage extends StatefulWidget {
+  const WalletPage({super.key});
+
+  @override
+  State<WalletPage> createState() => _WalletPageState();
+}
+
+class _WalletPageState extends State<WalletPage> {
+  final WalletService _walletService = WalletService();
+  final OrderBillService _orderBillService = OrderBillService();
+  final TextEditingController _amountController = TextEditingController();
+
+  bool _loading = true;
+  double _balance = 0;
+  List<Map<String, dynamic>> _transactions = const [];
+  List<Map<String, dynamic>> _pendingBills = const [];
+
+  String get _userId {
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null) throw Exception('No user logged in');
+    return user.id;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _loadData();
+  }
+
+  Future<void> _loadData() async {
+    setState(() => _loading = true);
+    try {
+      final balance = await _walletService.getWalletBalance(_userId);
+      final tx = await _walletService.getWalletTransactions(_userId);
+      final bills = await _orderBillService.getPendingBillsByUser(_userId);
+      if (!mounted) return;
+      setState(() {
+        _balance = balance;
+        _transactions = tx;
+        _pendingBills = bills;
+      });
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _topUp(double amount) async {
+    if (amount <= 0) return;
+    await _walletService.topUp(userId: _userId, amount: amount);
+    await _loadData();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Top up successful: RM ${amount.toStringAsFixed(2)}')),
+    );
+  }
+
+  @override
+  void dispose() {
+    _amountController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('My Wallet')),
+      body: RefreshIndicator(
+        onRefresh: _loadData,
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            _WalletCard(balance: _balance, pendingBillsCount: _pendingBills.length),
+            const SizedBox(height: 16),
+            const Text('Quick Top Up', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [20, 50, 100, 200]
+                  .map((e) => ElevatedButton(
+                        onPressed: _loading ? null : () => _topUp(e.toDouble()),
+                        child: Text('RM $e'),
+                      ))
+                  .toList(),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _amountController,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: InputDecoration(
+                labelText: 'Custom top up amount',
+                suffixIcon: TextButton(
+                  onPressed: _loading
+                      ? null
+                      : () {
+                          final value = double.tryParse(_amountController.text.trim()) ?? 0;
+                          _topUp(value);
+                        },
+                  child: const Text('Top Up'),
+                ),
+                border: const OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 24),
+            const Text('Pending Bills', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 12),
+            if (_pendingBills.isEmpty)
+              const _EmptyBox(message: 'No pending bills')
+            else
+              ..._pendingBills.map((bill) => Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.receipt_long_outlined),
+                      title: Text('${bill['title'] ?? 'Bill'} • RM ${((bill['amount'] ?? 0) as num).toStringAsFixed(2)}'),
+                      subtitle: Text('${bill['bill_type'] ?? ''} • ${bill['status'] ?? ''}'),
+                    ),
+                  )),
+            const SizedBox(height: 24),
+            const Text('Transaction History', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 12),
+            if (_loading)
+              const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator()))
+            else if (_transactions.isEmpty)
+              const _EmptyBox(message: 'No transactions yet')
+            else
+              ..._transactions.map((tx) => Card(
+                    child: ListTile(
+                      leading: Icon(
+                        (tx['direction'] == 'credit') ? Icons.arrow_downward : Icons.arrow_upward,
+                      ),
+                      title: Text('${tx['tx_type'] ?? 'transaction'} • RM ${((tx['amount'] ?? 0) as num).toStringAsFixed(2)}'),
+                      subtitle: Text('${tx['payment_method'] ?? '-'} • ${tx['remark'] ?? '-'}'),
+                    ),
+                  )),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _WalletCard extends StatelessWidget {
+  const _WalletCard({required this.balance, required this.pendingBillsCount});
+
+  final double balance;
+  final int pendingBillsCount;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: const Color(0xFF111827),
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Available Balance', style: TextStyle(color: Colors.white70)),
+          const SizedBox(height: 8),
+          Text(
+            'RM ${balance.toStringAsFixed(2)}',
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 28,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Pending bills: $pendingBillsCount',
+            style: const TextStyle(color: Colors.white70),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmptyBox extends StatelessWidget {
+  const _EmptyBox({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        border: Border.all(color: const Color(0xFFE5E7EB)),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Text(message),
+    );
+  }
+}

@@ -1,0 +1,63 @@
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+class OrderBillService {
+  OrderBillService({SupabaseClient? client})
+      : _supabase = client ?? Supabase.instance.client;
+
+  final SupabaseClient _supabase;
+
+  Future<void> createBill({
+    required String orderId,
+    required String userId,
+    required String billType,
+    required String title,
+    required double amount,
+    String? description,
+    String? photoUrl,
+    String? issuedBy,
+  }) async {
+    await _supabase.from('order_bills').insert({
+      'order_id': orderId,
+      'user_id': userId,
+      'bill_type': billType,
+      'title': title,
+      'description': description,
+      'amount': amount,
+      'photo_url': photoUrl,
+      'issued_by': issuedBy,
+      'status': 'Pending',
+    });
+  }
+
+  Future<List<Map<String, dynamic>>> getBillsByOrder(String orderId) async {
+    final rows = await _supabase
+        .from('order_bills')
+        .select()
+        .eq('order_id', orderId)
+        .order('issued_at', ascending: false);
+
+    return List<Map<String, dynamic>>.from(rows);
+  }
+
+  Future<List<Map<String, dynamic>>> getPendingBillsByUser(String userId) async {
+    final rows = await _supabase
+        .from('order_bills')
+        .select()
+        .eq('user_id', userId)
+        .eq('status', 'Pending')
+        .order('issued_at', ascending: false);
+
+    return List<Map<String, dynamic>>.from(rows);
+  }
+
+  Future<void> markBillPaidWithExternalMethod({
+    required String billId,
+    required String paymentMethod,
+  }) async {
+    await _supabase.from('order_bills').update({
+      'status': 'Paid',
+      'payment_method': paymentMethod,
+      'paid_at': DateTime.now().toIso8601String(),
+    }).eq('bill_id', billId);
+  }
+}
