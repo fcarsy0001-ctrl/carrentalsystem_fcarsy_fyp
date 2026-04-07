@@ -64,7 +64,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
 
   Future<void> _openNotification(Map<String, dynamic> row) async {
     final id = (row['notification_id'] ?? '').toString().trim();
-    final isRead = row['is_read'] == true;
+    final isRead = _service.isReadRow(row);
     try {
       if (!isRead && id.isNotEmpty) {
         await _service.markAsRead(id);
@@ -75,12 +75,12 @@ class _NotificationsPageState extends State<NotificationsPage> {
     await showDialog<void>(
       context: context,
       builder: (_) => AlertDialog(
-        title: Text((row['title'] ?? 'Notification').toString()),
+        title: Text(_service.titleFor(row)),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text((row['message'] ?? '').toString()),
+            Text(_service.messageFor(row)),
             const SizedBox(height: 12),
             Text(
               'Time: ${_fmtDateTime(row['created_at'])}',
@@ -157,9 +157,9 @@ class _NotificationsPageState extends State<NotificationsPage> {
             separatorBuilder: (_, __) => const SizedBox(height: 10),
             itemBuilder: (context, index) {
               final row = rows[index];
-              final isRead = row['is_read'] == true;
-              final title = (row['title'] ?? 'Notification').toString();
-              final message = (row['message'] ?? '').toString();
+              final isRead = _service.isReadRow(row);
+              final title = _service.titleFor(row);
+              final message = _service.messageFor(row);
               return InkWell(
                 borderRadius: BorderRadius.circular(14),
                 onTap: () => _openNotification(row),

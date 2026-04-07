@@ -1,4 +1,4 @@
-﻿import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'in_app_notification_service.dart';
 
@@ -25,6 +25,15 @@ class RoadTaxMonitorService {
     final parsed = DateTime.tryParse(raw);
     if (parsed == null) return null;
     return DateTime(parsed.year, parsed.month, parsed.day);
+  }
+
+  DateTime _addMonthsClamped(DateTime value, int months) {
+    final totalMonths = value.month - 1 + months;
+    final year = value.year + (totalMonths ~/ 12);
+    final month = (totalMonths % 12) + 1;
+    final lastDay = DateTime(year, month + 1, 0).day;
+    final day = value.day > lastDay ? lastDay : value.day;
+    return DateTime(year, month, day);
   }
 
   String _fmtDate(DateTime value) => '${value.day}/${value.month}/${value.year}';
@@ -65,6 +74,52 @@ class RoadTaxMonitorService {
     }
   }
 
+  Future<Set<String>> _resolveScopedLeaserIds({
+    required String requestedLeaserId,
+    required String? currentUserId,
+  }) async {
+    final ids = <String>{};
+    final cleanRequested = requestedLeaserId.trim();
+    if (cleanRequested.isNotEmpty) {
+      ids.add(cleanRequested);
+    }
+
+    final authUser = _client.auth.currentUser;
+    final email = (authUser?.email ?? '').trim().toLowerCase();
+
+    if ((currentUserId ?? '').trim().isNotEmpty) {
+      try {
+        final rows = _rows(
+          await _client
+              .from('leaser')
+              .select('leaser_id')
+              .eq('user_id', currentUserId!.trim()),
+        );
+        for (final row in rows) {
+          final id = _s(row['leaser_id']);
+          if (id.isNotEmpty) ids.add(id);
+        }
+      } catch (_) {}
+    }
+
+    if (email.isNotEmpty) {
+      try {
+        final rows = _rows(
+          await _client
+              .from('leaser')
+              .select('leaser_id')
+              .eq('email', email),
+        );
+        for (final row in rows) {
+          final id = _s(row['leaser_id']);
+          if (id.isNotEmpty) ids.add(id);
+        }
+      } catch (_) {}
+    }
+
+    return ids;
+  }
+
   Future<void> _markVehicleInactiveIfExpired({
     required String vehicleId,
     required String currentStatus,
@@ -81,11 +136,25 @@ class RoadTaxMonitorService {
   }
 
   Future<void> syncRoadTaxStates({String? leaserId}) async {
+    final notifications = InAppNotificationService(_client);
+    final currentUserId = await notifications.currentUserId();
+    final leaserFilter = _s(leaserId);
+    final scopedLeaserIds = leaserFilter.isEmpty
+        ? const <String>{}
+        : await _resolveScopedLeaserIds(
+            requestedLeaserId: leaserFilter,
+            currentUserId: currentUserId,
+          );
+
     var query = _client.from('vehicle').select(
       'vehicle_id, vehicle_plate_no, vehicle_brand, vehicle_model, vehicle_status, road_tax_expiry_date, leaser_id',
     );
-    if (_s(leaserId).isNotEmpty) {
-      query = query.eq('leaser_id', leaserId!.trim());
+    if (scopedLeaserIds.isNotEmpty) {
+      query = scopedLeaserIds.length == 1
+          ? query.eq('leaser_id', scopedLeaserIds.first)
+          : query.inFilter('leaser_id', scopedLeaserIds.toList());
+    } else if (leaserFilter.isNotEmpty) {
+      query = query.eq('leaser_id', leaserFilter);
     }
 
     final vehicles = _rows(await query);
@@ -96,10 +165,10 @@ class RoadTaxMonitorService {
         .where((value) => value.isNotEmpty)
         .toSet();
     final leaserUserIds = await _fetchLeaserUserIds(leaserIds);
-    final notifications = InAppNotificationService(_client);
 
     final today = _mytToday();
     final warningDate = today.add(const Duration(days: 7));
+    final minimumValidUntil = _addMonthsClamped(today, 2);
 
     for (final row in vehicles) {
       final expiry = _dateOnly(row['road_tax_expiry_date']);
@@ -107,7 +176,14 @@ class RoadTaxMonitorService {
 
       final vehicleId = _s(row['vehicle_id']);
       final label = _vehicleLabel(row);
-      final leaserUserId = leaserUserIds[_s(row['leaser_id'])];
+      final rowLeaserId = _s(row['leaser_id']);
+      String? leaserUserId = leaserUserIds[rowLeaserId];
+      if ((leaserUserId == null || leaserUserId.isEmpty) &&
+          leaserFilter.isNotEmpty &&
+          currentUserId != null &&
+          currentUserId.isNotEmpty) {
+        leaserUserId = currentUserId;
+      }
 
       if (expiry.isBefore(today)) {
         await _markVehicleInactiveIfExpired(
@@ -115,7 +191,7 @@ class RoadTaxMonitorService {
           currentStatus: _s(row['vehicle_status']),
         );
 
-        if (leaserUserId != null) {
+        if (leaserUserId != null && leaserUserId.isNotEmpty) {
           await notifications.createNotificationOnce(
             userId: leaserUserId,
             type: 'road_tax_expired',
@@ -127,13 +203,24 @@ class RoadTaxMonitorService {
         continue;
       }
 
-      if (!expiry.isAfter(warningDate) && leaserUserId != null) {
+      if (!expiry.isAfter(warningDate) && leaserUserId != null && leaserUserId.isNotEmpty) {
         await notifications.createNotificationOnce(
           userId: leaserUserId,
-          type: 'road_tax_expiring',
+          type: 'road_tax_expiring_urgent',
           title: 'Road Tax Expiring Soon',
           message:
               '$label road tax will expire on ${_fmtDate(expiry)}. Renew it within 1 week to avoid the vehicle becoming Inactive.',
+        );
+        continue;
+      }
+
+      if (expiry.isBefore(minimumValidUntil) && leaserUserId != null && leaserUserId.isNotEmpty) {
+        await notifications.createNotificationOnce(
+          userId: leaserUserId,
+          type: 'road_tax_below_threshold',
+          title: 'Road Tax Renewal Needed',
+          message:
+              '$label road tax expires on ${_fmtDate(expiry)}. It is now below the required 2-month validity period and should be renewed soon.',
         );
       }
     }
