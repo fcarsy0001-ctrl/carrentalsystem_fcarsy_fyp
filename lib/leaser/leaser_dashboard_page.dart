@@ -2,12 +2,13 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-import '../services/analytics_service.dart';
-import '../core/widgets/simple_charts.dart';
 import '../admin/service_job_orders_page.dart';
 import '../admin/vehicle_location_dashboard_page.dart';
 import '../admin/vehicle_onboarding_page.dart';
+import '../core/widgets/simple_charts.dart';
 import '../payments/service_job_payment_history_page.dart';
+import '../services/analytics_service.dart';
+import 'leaser_profile_page.dart';
 import 'reports_leaser_page.dart';
 import 'vehicle_onboarding_status_page.dart';
 
@@ -39,9 +40,16 @@ class _LeaserDashboardPageState extends State<LeaserDashboardPage> {
     final start = end.subtract(const Duration(days: 13));
 
     final metrics = await svc.loadLeaserMetrics(leaserId: widget.leaserId);
+    final fleet = await svc.loadLeaserFleetMetrics(leaserId: widget.leaserId);
     final series = await svc.leaserDailySeries(leaserId: widget.leaserId, start: start, end: end);
 
-    return _DashData(metrics: metrics, series: series, start: start, end: end);
+    return _DashData(
+      metrics: metrics,
+      fleet: fleet,
+      series: series,
+      start: start,
+      end: end,
+    );
   }
 
   Future<void> _refresh() async {
@@ -80,23 +88,48 @@ class _LeaserDashboardPageState extends State<LeaserDashboardPage> {
           child: ListView(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
             children: [
-              Row(
+              GridView.count(
+                crossAxisCount: 2,
+                crossAxisSpacing: 12,
+                mainAxisSpacing: 12,
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                childAspectRatio: 1.45,
                 children: [
-                  Expanded(
-                    child: _KpiCard(
-                      title: 'Total Booking',
-                      value: d.metrics.bookings.toString(),
-                      icon: Icons.receipt_long_outlined,
-                    ),
+                  _KpiCard(
+                    title: 'Total Vehicles',
+                    value: d.fleet.totalVehicles.toString(),
+                    icon: Icons.directions_car_outlined,
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: _KpiCard(
-                      title: 'Total Revenue',
-                      subtitle: 'Profit after commission',
-                      value: _money(d.metrics.netProfit),
-                      icon: Icons.payments_outlined,
-                    ),
+                  _KpiCard(
+                    title: 'Free Now',
+                    value: d.fleet.freeNow.toString(),
+                    icon: Icons.check_circle_outline,
+                    subtitle: 'Available to rent now',
+                  ),
+                  _KpiCard(
+                    title: 'Occupied Now',
+                    value: d.fleet.occupiedNow.toString(),
+                    icon: Icons.car_rental_outlined,
+                    subtitle: 'Currently in booking use',
+                  ),
+                  _KpiCard(
+                    title: 'Unavailable',
+                    value: d.fleet.unavailableNow.toString(),
+                    icon: Icons.block_outlined,
+                    subtitle: 'Maintenance / inactive / pending',
+                  ),
+                  _KpiCard(
+                    title: 'Gross Sales',
+                    value: _money(d.metrics.grossRevenue),
+                    icon: Icons.payments_outlined,
+                    subtitle: 'This leaser only',
+                  ),
+                  _KpiCard(
+                    title: 'Net Payout',
+                    value: _money(d.metrics.netProfit),
+                    icon: Icons.account_balance_wallet_outlined,
+                    subtitle: 'After commission',
                   ),
                 ],
               ),
@@ -104,14 +137,27 @@ class _LeaserDashboardPageState extends State<LeaserDashboardPage> {
               const SizedBox(height: 14),
 
               _Section(
-                title: 'Reports',
-                subtitle: 'Weekly / Monthly / Yearly profit reports',
-                child: ElevatedButton.icon(
-                  onPressed: () => Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => ReportsLeaserPage(leaserId: widget.leaserId)),
-                  ),
-                  icon: const Icon(Icons.analytics_outlined),
-                  label: const Text('Generate Reports'),
+                title: 'Leaser actions',
+                subtitle: 'Open your sales report or edit simple profile info',
+                child: Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: [
+                    ElevatedButton.icon(
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => ReportsLeaserPage(leaserId: widget.leaserId)),
+                      ),
+                      icon: const Icon(Icons.analytics_outlined),
+                      label: const Text('Sales Report'),
+                    ),
+                    ElevatedButton.icon(
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => LeaserProfilePage(leaserId: widget.leaserId)),
+                      ),
+                      icon: const Icon(Icons.person_outline),
+                      label: const Text('Profile'),
+                    ),
+                  ],
                 ),
               ),
 
@@ -193,8 +239,8 @@ class _LeaserDashboardPageState extends State<LeaserDashboardPage> {
               const SizedBox(height: 14),
 
               _Section(
-                title: 'Revenue by day',
-                subtitle: 'Profit per day',
+                title: 'Net payout by day',
+                subtitle: 'Estimated daily amount after platform commission',
                 child: SimpleLineChart(values: revenue),
               ),
             ],
@@ -208,9 +254,16 @@ class _LeaserDashboardPageState extends State<LeaserDashboardPage> {
 }
 
 class _DashData {
-  const _DashData({required this.metrics, required this.series, required this.start, required this.end});
+  const _DashData({
+    required this.metrics,
+    required this.fleet,
+    required this.series,
+    required this.start,
+    required this.end,
+  });
 
   final LeaserMetrics metrics;
+  final LeaserFleetMetrics fleet;
   final List<DailySeriesPoint> series;
   final DateTime start;
   final DateTime end;
@@ -245,6 +298,7 @@ class _KpiCard extends StatelessWidget {
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
                 if (subtitle != null) ...[
@@ -293,9 +347,3 @@ class _Section extends StatelessWidget {
     );
   }
 }
-
-
-
-
-
-

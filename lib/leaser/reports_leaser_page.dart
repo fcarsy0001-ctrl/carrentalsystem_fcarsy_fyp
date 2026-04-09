@@ -2,13 +2,18 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-import '../services/analytics_service.dart';
 import '../core/widgets/simple_charts.dart';
+import '../services/analytics_service.dart';
 
 class ReportsLeaserPage extends StatefulWidget {
-  const ReportsLeaserPage({super.key, required this.leaserId});
+  const ReportsLeaserPage({
+    super.key,
+    required this.leaserId,
+    this.embedded = false,
+  });
 
   final String leaserId;
+  final bool embedded;
 
   @override
   State<ReportsLeaserPage> createState() => _ReportsLeaserPageState();
@@ -112,18 +117,27 @@ class _ReportsLeaserPageState extends State<ReportsLeaserPage> {
 
   @override
   Widget build(BuildContext context) {
-    final rangeText = _rangeText();
-
+    final content = _buildBody();
+    if (widget.embedded) return content;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Reports (Profit)'),
+        title: const Text('Leaser Sales Report'),
         centerTitle: true,
         actions: [
           IconButton(onPressed: _pickDate, icon: const Icon(Icons.date_range_outlined)),
           IconButton(onPressed: _generate, icon: const Icon(Icons.refresh)),
         ],
       ),
-      body: ListView(
+      body: content,
+    );
+  }
+
+  Widget _buildBody() {
+    final rangeText = _rangeText();
+
+    return RefreshIndicator(
+      onRefresh: _generate,
+      child: ListView(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
         children: [
           Row(
@@ -145,10 +159,28 @@ class _ReportsLeaserPageState extends State<ReportsLeaserPage> {
             ],
           ),
           const SizedBox(height: 10),
-          Text('Range: $rangeText', style: TextStyle(color: Colors.grey.shade700)),
+          Row(
+            children: [
+              Expanded(
+                child: Text('Range: $rangeText', style: TextStyle(color: Colors.grey.shade700)),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                onPressed: _pickDate,
+                icon: const Icon(Icons.event_outlined),
+                label: const Text('Date'),
+              ),
+            ],
+          ),
           const SizedBox(height: 14),
 
-          if (_loading) const Center(child: Padding(padding: EdgeInsets.all(18), child: CircularProgressIndicator())),
+          if (_loading)
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.all(18),
+                child: CircularProgressIndicator(),
+              ),
+            ),
           if (_error != null)
             Padding(
               padding: const EdgeInsets.all(12),
@@ -157,12 +189,12 @@ class _ReportsLeaserPageState extends State<ReportsLeaserPage> {
 
           if (_metrics != null && !_loading) ...[
             _SummaryCard(
-              title: 'Summary',
+              title: 'Leaser-only sales summary',
               items: [
                 _SummaryItem('Paid Bookings', _metrics!.bookings.toString()),
-                _SummaryItem('Gross Revenue', _money(_metrics!.grossRevenue)),
+                _SummaryItem('Gross Sales', _money(_metrics!.grossRevenue)),
                 _SummaryItem('Platform Commission', '${(PlatformRates.commissionRate * 100).toStringAsFixed(0)}%'),
-                _SummaryItem('Net Profit', _money(_metrics!.netProfit)),
+                _SummaryItem('Estimated Net Payout', _money(_metrics!.netProfit)),
               ],
             ),
 
@@ -170,15 +202,15 @@ class _ReportsLeaserPageState extends State<ReportsLeaserPage> {
 
             _Section(
               title: 'Booking rate',
-              subtitle: 'Paid bookings per day',
+              subtitle: 'Paid bookings per day for this leaser only',
               child: SimpleBarChart(values: _series.map((e) => e.count).toList()),
             ),
 
             const SizedBox(height: 14),
 
             _Section(
-              title: 'Revenue by day',
-              subtitle: 'Profit per day',
+              title: 'Net payout by day',
+              subtitle: 'Estimated amount after platform commission',
               child: SimpleLineChart(values: _series.map((e) => e.revenue).toList()),
             ),
 
@@ -189,7 +221,7 @@ class _ReportsLeaserPageState extends State<ReportsLeaserPage> {
               child: Column(
                 children: _series.map((p) {
                   final label = '${p.day.day}/${p.day.month}';
-                  final line = '$label • Bookings ${p.count} • Gross ${_money(p.gross)} • Profit ${_money(p.revenue)}';
+                  final line = '$label • Bookings ${p.count} • Sales ${_money(p.gross)} • Net ${_money(p.revenue)}';
                   return ListTile(
                     dense: true,
                     title: Text(line, style: const TextStyle(fontWeight: FontWeight.w700)),

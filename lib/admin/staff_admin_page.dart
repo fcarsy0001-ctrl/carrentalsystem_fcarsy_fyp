@@ -38,6 +38,20 @@ class _StaffAdminPageState extends State<StaffAdminPage> {
     });
   }
 
+  int? _parseReviewRating(dynamic value) {
+    if (value is num) {
+      final n = value.toInt();
+      return (n >= 1 && n <= 5) ? n : null;
+    }
+    final raw = _s(value).trim();
+    if (raw.startsWith('[STAFF_REVIEW:') && raw.endsWith(']')) {
+      final parsed = int.tryParse(raw.substring('[STAFF_REVIEW:'.length, raw.length - 1));
+      return (parsed != null && parsed >= 1 && parsed <= 5) ? parsed : null;
+    }
+    final parsed = int.tryParse(raw);
+    return (parsed != null && parsed >= 1 && parsed <= 5) ? parsed : null;
+  }
+
   Future<List<Map<String, dynamic>>> _load() async {
     final rows = await _supa
         .from('staff_admin')
@@ -48,9 +62,13 @@ class _StaffAdminPageState extends State<StaffAdminPage> {
         .toList();
 
     final authUidToStaffId = <String, String>{};
+    final knownStaffIds = <String>{};
     for (final row in list) {
       final staffId = _s(row['sadmin_id']).trim();
       final authUid = _s(row['auth_uid']).trim();
+      if (staffId.isNotEmpty) {
+        knownStaffIds.add(staffId);
+      }
       if (staffId.isNotEmpty && authUid.isNotEmpty) {
         authUidToStaffId[authUid] = staffId;
       }
@@ -58,6 +76,8 @@ class _StaffAdminPageState extends State<StaffAdminPage> {
       row['review_count'] = 0;
       row['average_rating'] = 0.0;
     }
+
+    final ticketToStaffId = <String, String>{};
 
     try {
       final ticketRows = await _supa
@@ -75,6 +95,7 @@ class _StaffAdminPageState extends State<StaffAdminPage> {
           staffId = authUidToStaffId[_s(ticket['assigned_admin_uid']).trim()] ?? '';
         }
         if (staffId.isEmpty) continue;
+        ticketToStaffId[ticketId] = staffId;
         countedTicketIdsByStaff.putIfAbsent(staffId, () => <String>{}).add(ticketId);
       }
 
@@ -85,33 +106,58 @@ class _StaffAdminPageState extends State<StaffAdminPage> {
     } catch (_) {}
 
     try {
-      List reviewRows = const [];
-      try {
-        final result = await _supa.from('support_ticket_review').select('staff_id,rating');
-        if (result is List) reviewRows = result;
-      } catch (_) {
-        final result = await _supa.from('support_ticket_review').select('staff_auth_uid,rating');
-        if (result is List) reviewRows = result;
-      }
-
       final totalRating = <String, int>{};
       final totalCount = <String, int>{};
+      final ratedTicketIds = <String>{};
 
-      for (final raw in reviewRows) {
-        final review = Map<String, dynamic>.from(raw as Map);
-        var staffId = _s(review['staff_id']).trim();
-        if (staffId.isEmpty) {
-          staffId = authUidToStaffId[_s(review['staff_auth_uid']).trim()] ?? '';
+      try {
+        final reviewRows = await _supa
+            .from('support_ticket_review')
+            .select('ticket_id,staff_id,rating');
+        if (reviewRows is List) {
+          for (final raw in reviewRows) {
+            final review = Map<String, dynamic>.from(raw as Map);
+            final ticketId = _s(review['ticket_id']).trim();
+            var staffId = _s(review['staff_id']).trim();
+            if (staffId.isNotEmpty && !knownStaffIds.contains(staffId)) {
+              staffId = authUidToStaffId[staffId] ?? ticketToStaffId[ticketId] ?? '';
+            }
+            if (staffId.isEmpty) {
+              staffId = ticketToStaffId[ticketId] ?? '';
+            }
+            final rating = _parseReviewRating(review['rating']);
+            if (staffId.isEmpty || rating == null) continue;
+
+            totalRating[staffId] = (totalRating[staffId] ?? 0) + rating;
+            totalCount[staffId] = (totalCount[staffId] ?? 0) + 1;
+            if (ticketId.isNotEmpty) {
+              ratedTicketIds.add(ticketId);
+            }
+          }
         }
-        if (staffId.isEmpty) continue;
+      } catch (_) {}
 
-        final ratingValue = review['rating'];
-        final rating = ratingValue is num ? ratingValue.toInt() : int.tryParse(_s(ratingValue));
-        if (rating == null || rating < 1 || rating > 5) continue;
+      try {
+        final hiddenReviewRows = await _supa
+            .from('support_message')
+            .select('ticket_id,message')
+            .like('message', '[STAFF_REVIEW:%');
+        if (hiddenReviewRows is List) {
+          for (final raw in hiddenReviewRows) {
+            final review = Map<String, dynamic>.from(raw as Map);
+            final ticketId = _s(review['ticket_id']).trim();
+            if (ticketId.isEmpty || ratedTicketIds.contains(ticketId)) continue;
 
-        totalRating[staffId] = (totalRating[staffId] ?? 0) + rating;
-        totalCount[staffId] = (totalCount[staffId] ?? 0) + 1;
-      }
+            final staffId = ticketToStaffId[ticketId] ?? '';
+            final rating = _parseReviewRating(review['message']);
+            if (staffId.isEmpty || rating == null) continue;
+
+            totalRating[staffId] = (totalRating[staffId] ?? 0) + rating;
+            totalCount[staffId] = (totalCount[staffId] ?? 0) + 1;
+            ratedTicketIds.add(ticketId);
+          }
+        }
+      } catch (_) {}
 
       for (final row in list) {
         final staffId = _s(row['sadmin_id']).trim();

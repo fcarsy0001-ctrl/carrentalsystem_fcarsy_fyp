@@ -43,9 +43,136 @@ class _StaffAdminPageState extends State<StaffAdminPage> {
         .from('staff_admin')
         .select('sadmin_id,auth_uid,sadmin_name,sadmin_email,sadmin_salary,sadmin_status,created_at')
         .order('sadmin_id');
-    return (rows as List)
+    final list = (rows as List)
         .map((e) => Map<String, dynamic>.from(e as Map))
         .toList();
+
+    final authUidToStaffId = <String, String>{};
+    for (final row in list) {
+      final staffId = _s(row['sadmin_id']).trim();
+      final authUid = _s(row['auth_uid']).trim();
+      if (staffId.isNotEmpty && authUid.isNotEmpty) {
+        authUidToStaffId[authUid] = staffId;
+      }
+      row['handled_case_count'] = 0;
+      row['review_count'] = 0;
+      row['average_rating'] = 0.0;
+    }
+
+    try {
+      final ticketRows = await _supa
+          .from('support_ticket')
+          .select('ticket_id,handled_by_staff_id,assigned_admin_uid,assigned_admin_role');
+      final countedTicketIdsByStaff = <String, Set<String>>{};
+      for (final raw in (ticketRows as List)) {
+        final ticket = Map<String, dynamic>.from(raw as Map);
+        final ticketId = _s(ticket['ticket_id']).trim();
+        if (ticketId.isEmpty) continue;
+
+        var staffId = _s(ticket['handled_by_staff_id']).trim();
+        if (staffId.isEmpty &&
+            _s(ticket['assigned_admin_role']).trim().toLowerCase() == 'staff') {
+          staffId = authUidToStaffId[_s(ticket['assigned_admin_uid']).trim()] ?? '';
+        }
+        if (staffId.isEmpty) continue;
+        countedTicketIdsByStaff.putIfAbsent(staffId, () => <String>{}).add(ticketId);
+      }
+
+      for (final row in list) {
+        final staffId = _s(row['sadmin_id']).trim();
+        row['handled_case_count'] = countedTicketIdsByStaff[staffId]?.length ?? 0;
+      }
+    } catch (_) {}
+
+    final totalRating = <String, int>{};
+    final totalCount = <String, int>{};
+    final ratedTicketIdsByStaff = <String, Set<String>>{};
+
+    try {
+      List reviewRows = const [];
+      try {
+        final result = await _supa.from('support_ticket_review').select('ticket_id,staff_id,rating');
+        if (result is List) reviewRows = result;
+      } catch (_) {
+        final result = await _supa.from('support_ticket_review').select('ticket_id,staff_auth_uid,rating');
+        if (result is List) reviewRows = result;
+      }
+
+      for (final raw in reviewRows) {
+        final review = Map<String, dynamic>.from(raw as Map);
+        final ticketId = _s(review['ticket_id']).trim();
+        var staffId = _s(review['staff_id']).trim();
+        if (staffId.isEmpty) {
+          staffId = authUidToStaffId[_s(review['staff_auth_uid']).trim()] ?? '';
+        }
+        if (staffId.isEmpty) continue;
+
+        final rating = _parseRating(review['rating']);
+        if (rating == null) continue;
+
+        final staffTicketSet = ratedTicketIdsByStaff.putIfAbsent(staffId, () => <String>{});
+        if (ticketId.isNotEmpty && staffTicketSet.contains(ticketId)) continue;
+        if (ticketId.isNotEmpty) {
+          staffTicketSet.add(ticketId);
+        }
+
+        totalRating[staffId] = (totalRating[staffId] ?? 0) + rating;
+        totalCount[staffId] = (totalCount[staffId] ?? 0) + 1;
+      }
+    } catch (_) {}
+
+    try {
+      final ticketRows = await _supa
+          .from('support_ticket')
+          .select('ticket_id,handled_by_staff_id,assigned_admin_uid,assigned_admin_role');
+      final ticketToStaffId = <String, String>{};
+      if (ticketRows is List) {
+        for (final raw in ticketRows) {
+          final ticket = Map<String, dynamic>.from(raw as Map);
+          final ticketId = _s(ticket['ticket_id']).trim();
+          if (ticketId.isEmpty) continue;
+
+          var staffId = _s(ticket['handled_by_staff_id']).trim();
+          if (staffId.isEmpty && _s(ticket['assigned_admin_role']).trim().toLowerCase() == 'staff') {
+            staffId = authUidToStaffId[_s(ticket['assigned_admin_uid']).trim()] ?? '';
+          }
+          if (staffId.isEmpty) continue;
+          ticketToStaffId[ticketId] = staffId;
+        }
+      }
+
+      final messageRows = await _supa
+          .from('support_message')
+          .select('ticket_id,message,created_at')
+          .order('created_at', ascending: false);
+      if (messageRows is List) {
+        for (final raw in messageRows) {
+          final msg = Map<String, dynamic>.from(raw as Map);
+          final ticketId = _s(msg['ticket_id']).trim();
+          if (ticketId.isEmpty) continue;
+          final staffId = ticketToStaffId[ticketId] ?? '';
+          if (staffId.isEmpty) continue;
+          final rating = _extractHiddenReviewRating(msg['message']);
+          if (rating == null) continue;
+
+          final staffTicketSet = ratedTicketIdsByStaff.putIfAbsent(staffId, () => <String>{});
+          if (staffTicketSet.contains(ticketId)) continue;
+          staffTicketSet.add(ticketId);
+          totalRating[staffId] = (totalRating[staffId] ?? 0) + rating;
+          totalCount[staffId] = (totalCount[staffId] ?? 0) + 1;
+        }
+      }
+    } catch (_) {}
+
+    for (final row in list) {
+      final staffId = _s(row['sadmin_id']).trim();
+      final count = totalCount[staffId] ?? 0;
+      final sum = totalRating[staffId] ?? 0;
+      row['review_count'] = count;
+      row['average_rating'] = count == 0 ? 0.0 : sum / count;
+    }
+
+    return list;
   }
 
   Future<void> _refresh() async {
@@ -60,6 +187,24 @@ class _StaffAdminPageState extends State<StaffAdminPage> {
   }
 
   String _s(dynamic v) => v == null ? '' : v.toString();
+
+
+  int? _parseRating(dynamic value) {
+    if (value == null) return null;
+    if (value is num) {
+      final n = value.toInt();
+      return (n >= 1 && n <= 5) ? n : null;
+    }
+    final n = int.tryParse(_s(value));
+    return (n != null && n >= 1 && n <= 5) ? n : null;
+  }
+
+  int? _extractHiddenReviewRating(dynamic value) {
+    final raw = _s(value);
+    const prefix = '[STAFF_REVIEW:';
+    if (!raw.startsWith(prefix) || !raw.endsWith(']')) return null;
+    return _parseRating(raw.substring(prefix.length, raw.length - 1));
+  }
 
   bool get _isSuperAdmin => (_ctx?.isSuperAdmin ?? false);
 
@@ -242,6 +387,16 @@ class _StaffAdminPageState extends State<StaffAdminPage> {
                         final salary = r['sadmin_salary'];
                         final status = _s(r['sadmin_status']);
 
+                        final handledCaseCount = (r['handled_case_count'] is num)
+                            ? (r['handled_case_count'] as num).toInt()
+                            : int.tryParse(_s(r['handled_case_count'])) ?? 0;
+                        final reviewCount = (r['review_count'] is num)
+                            ? (r['review_count'] as num).toInt()
+                            : int.tryParse(_s(r['review_count'])) ?? 0;
+                        final averageRating = (r['average_rating'] is num)
+                            ? (r['average_rating'] as num).toDouble()
+                            : double.tryParse(_s(r['average_rating'])) ?? 0.0;
+
                         return AdminCard(
                           child: ListTile(
                             leading: const Icon(Icons.admin_panel_settings_outlined),
@@ -249,7 +404,37 @@ class _StaffAdminPageState extends State<StaffAdminPage> {
                               name.isEmpty ? (id.isEmpty ? 'Staff Admin' : id) : '$name ($id)',
                               style: const TextStyle(fontWeight: FontWeight.w800),
                             ),
-                            subtitle: Text('${email.isEmpty ? '-' : email}\nSalary: ${salary ?? '-'}'),
+                            subtitle: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(email.isEmpty ? '-' : email),
+                                const SizedBox(height: 2),
+                                Text('Salary: ${salary ?? '-'}'),
+                                const SizedBox(height: 6),
+                                Wrap(
+                                  spacing: 8,
+                                  runSpacing: 8,
+                                  children: [
+                                    _MetricChip(
+                                      icon: Icons.support_agent,
+                                      label: 'Cases',
+                                      value: handledCaseCount.toString(),
+                                    ),
+                                    _MetricChip(
+                                      icon: Icons.reviews_outlined,
+                                      label: 'Reviews',
+                                      value: reviewCount.toString(),
+                                    ),
+                                    _MetricChip(
+                                      icon: Icons.star_rate_rounded,
+                                      label: 'Rating',
+                                      value: reviewCount == 0 ? 'No rating' : averageRating.toStringAsFixed(1),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
                             isThreeLine: true,
                             trailing: Row(
                               mainAxisSize: MainAxisSize.min,
@@ -289,6 +474,40 @@ class _StaffAdminPageState extends State<StaffAdminPage> {
           ],
         );
       },
+    );
+  }
+}
+
+class _MetricChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+
+  const _MetricChip({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16),
+          const SizedBox(width: 6),
+          Text(
+            '$label: $value',
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+        ],
+      ),
     );
   }
 }

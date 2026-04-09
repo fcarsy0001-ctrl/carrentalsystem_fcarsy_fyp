@@ -209,13 +209,15 @@ class SupportTicketService {
     if (directRating != null) return directRating;
 
     try {
-      final row = await _client
+      final rows = await _client
           .from('support_ticket_review')
-          .select('rating')
+          .select('rating,created_at')
           .eq('ticket_id', ticketId)
-          .maybeSingle();
-      if (row != null) {
-        final stored = _parseRating((row as Map)['rating']);
+          .order('created_at', ascending: false)
+          .limit(1);
+      if (rows is List && rows.isNotEmpty) {
+        final row = Map<String, dynamic>.from(rows.first as Map);
+        final stored = _parseRating(row['rating']);
         if (stored != null) return stored;
       }
     } catch (_) {}
@@ -459,9 +461,20 @@ class SupportTicketService {
       update['assigned_admin_uid'] = _s(actor['auth_uid']);
       update['assigned_admin_name'] = _s(actor['sender_name']);
       update['assigned_admin_role'] = _s(actor['sender_role']);
+      if (_s(actor['sender_role']).toLowerCase() == 'staff') {
+        update['handled_by_staff_id'] = _s(actor['actor_id']);
+        update['handled_by_staff_name'] = _s(actor['sender_name']);
+      }
     }
 
-    await _client.from('support_ticket').update(update).eq('ticket_id', ticketId);
+    try {
+      await _client.from('support_ticket').update(update).eq('ticket_id', ticketId);
+    } catch (_) {
+      final fallbackUpdate = Map<String, dynamic>.from(update)
+        ..remove('handled_by_staff_id')
+        ..remove('handled_by_staff_name');
+      await _client.from('support_ticket').update(fallbackUpdate).eq('ticket_id', ticketId);
+    }
   }
 
   Future<void> closeTicket(String ticketId) async {
@@ -480,9 +493,20 @@ class SupportTicketService {
       update['assigned_admin_uid'] = _s(actor['auth_uid']);
       update['assigned_admin_name'] = _s(actor['sender_name']);
       update['assigned_admin_role'] = _s(actor['sender_role']);
+      if (_s(actor['sender_role']).toLowerCase() == 'staff') {
+        update['handled_by_staff_id'] = _s(actor['actor_id']);
+        update['handled_by_staff_name'] = _s(actor['sender_name']);
+      }
     }
 
-    await _client.from('support_ticket').update(update).eq('ticket_id', ticketId);
+    try {
+      await _client.from('support_ticket').update(update).eq('ticket_id', ticketId);
+    } catch (_) {
+      final fallbackUpdate = Map<String, dynamic>.from(update)
+        ..remove('handled_by_staff_id')
+        ..remove('handled_by_staff_name');
+      await _client.from('support_ticket').update(fallbackUpdate).eq('ticket_id', ticketId);
+    }
   }
 
   Future<void> submitTicketReview({
@@ -515,6 +539,43 @@ class SupportTicketService {
         'staff_rated_at': now,
       }).eq('ticket_id', ticketId);
       return;
+    } catch (_) {}
+
+    final staffId = _s(ticket['handled_by_staff_id']).isNotEmpty
+        ? _s(ticket['handled_by_staff_id'])
+        : (_s(ticket['assigned_admin_role']).toLowerCase() == 'staff'
+            ? _s(ticket['assigned_admin_uid'])
+            : '');
+
+    try {
+      await _client.from('support_ticket_review').insert(<String, dynamic>{
+        'ticket_id': ticketId,
+        'user_id': _s(ticket['user_id']),
+        'staff_id': staffId,
+        'rating': rating,
+        'created_at': now,
+      });
+      return;
+    } catch (_) {}
+
+    try {
+      final rows = await _client
+          .from('support_ticket_review')
+          .select('review_id')
+          .eq('ticket_id', ticketId)
+          .order('created_at', ascending: false)
+          .limit(1);
+      if (rows is List && rows.isNotEmpty) {
+        final existingReview = Map<String, dynamic>.from(rows.first as Map);
+        final reviewId = existingReview['review_id'];
+        if (reviewId != null) {
+          await _client
+              .from('support_ticket_review')
+              .update(<String, dynamic>{'staff_id': staffId, 'rating': rating})
+              .eq('review_id', reviewId);
+          return;
+        }
+      }
     } catch (_) {}
 
     try {

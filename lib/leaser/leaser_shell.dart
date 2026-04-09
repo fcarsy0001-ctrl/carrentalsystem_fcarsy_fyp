@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../admin/service_job_orders_page.dart';
@@ -9,6 +9,8 @@ import '../main.dart';
 import '../services/in_app_notification_service.dart';
 import '../services/road_tax_monitor_service.dart';
 import 'leaser_dashboard_page.dart';
+import 'leaser_profile_page.dart';
+import 'reports_leaser_page.dart';
 import 'vehicle_onboarding_status_page.dart';
 
 class LeaserShell extends StatefulWidget {
@@ -64,14 +66,17 @@ class _LeaserShellState extends State<LeaserShell> {
   Widget build(BuildContext context) {
     final tabs = <Tab>[
       const Tab(icon: Icon(Icons.dashboard_outlined), text: 'Dashboard'),
+      const Tab(icon: Icon(Icons.analytics_outlined), text: 'Reports'),
       const Tab(icon: Icon(Icons.directions_car_outlined), text: 'Vehicles'),
       const Tab(icon: Icon(Icons.place_outlined), text: 'Locations'),
       const Tab(icon: Icon(Icons.build_circle_outlined), text: 'Service Jobs'),
       const Tab(icon: Icon(Icons.track_changes_outlined), text: 'Status'),
+      const Tab(icon: Icon(Icons.person_outline), text: 'Profile'),
     ];
 
     final views = <Widget>[
       LeaserDashboardPage(leaserId: widget.leaserId),
+      ReportsLeaserPage(leaserId: widget.leaserId, embedded: true),
       VehicleOnboardingPage(
         leaserId: widget.leaserId,
         title: 'My Vehicles',
@@ -95,6 +100,7 @@ class _LeaserShellState extends State<LeaserShell> {
         leaserId: widget.leaserId,
         embedded: true,
       ),
+      LeaserProfilePage(leaserId: widget.leaserId, embedded: true),
     ];
 
     return DefaultTabController(

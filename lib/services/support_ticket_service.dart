@@ -507,6 +507,31 @@ class SupportTicketService {
     }
   }
 
+  Future<String> _resolveStaffIdForTicket(Map<String, dynamic> ticket) async {
+    final handledByStaffId = _s(ticket['handled_by_staff_id']).trim();
+    if (handledByStaffId.isNotEmpty) return handledByStaffId;
+
+    if (_s(ticket['assigned_admin_role']).trim().toLowerCase() != 'staff') {
+      return '';
+    }
+
+    final assignedAuthUid = _s(ticket['assigned_admin_uid']).trim();
+    if (assignedAuthUid.isEmpty) return '';
+
+    try {
+      final rows = await _client
+          .from('staff_admin')
+          .select('sadmin_id')
+          .eq('auth_uid', assignedAuthUid)
+          .limit(1);
+      if (rows is List && rows.isNotEmpty) {
+        return _s((rows.first as Map)['sadmin_id']).trim();
+      }
+    } catch (_) {}
+
+    return '';
+  }
+
   Future<void> submitTicketReview({
     required String ticketId,
     required int stars,
@@ -539,36 +564,28 @@ class SupportTicketService {
       return;
     } catch (_) {}
 
-    final staffId = _s(ticket['handled_by_staff_id']).isNotEmpty
-        ? _s(ticket['handled_by_staff_id'])
-        : (_s(ticket['assigned_admin_role']).toLowerCase() == 'staff'
-            ? _s(ticket['assigned_admin_uid'])
-            : '');
+    final staffId = await _resolveStaffIdForTicket(ticket);
 
-    try {
-      await _client.from('support_ticket_review').upsert(<String, dynamic>{
-        'ticket_id': ticketId,
-        'user_id': _s(ticket['user_id']),
-        'staff_id': staffId,
-        'rating': rating,
-        'created_at': now,
-      }, onConflict: 'ticket_id');
-      return;
-    } catch (_) {}
-
-    try {
-      await _client.from('support_ticket_review').upsert(<String, dynamic>{
-        'ticket_id': ticketId,
-        'user_id': _s(ticket['user_id']),
-        'staff_auth_uid': _s(ticket['assigned_admin_uid']),
-        'staff_name': _s(ticket['assigned_admin_name']),
-        'staff_role': _s(ticket['assigned_admin_role']),
-        'rating': rating,
-        'created_at': now,
-        'updated_at': now,
-      }, onConflict: 'ticket_id');
-      return;
-    } catch (_) {}
+    if (staffId.isNotEmpty) {
+      try {
+        final existingReview = await _client
+            .from('support_ticket_review')
+            .select('review_id')
+            .eq('ticket_id', ticketId)
+            .limit(1)
+            .maybeSingle();
+        if (existingReview == null) {
+          await _client.from('support_ticket_review').insert(<String, dynamic>{
+            'ticket_id': ticketId,
+            'user_id': _s(ticket['user_id']),
+            'staff_id': staffId,
+            'rating': rating,
+            'created_at': now,
+          });
+        }
+        return;
+      } catch (_) {}
+    }
 
     await _insertHiddenUserMetaMessage(
       ticketId: ticketId,

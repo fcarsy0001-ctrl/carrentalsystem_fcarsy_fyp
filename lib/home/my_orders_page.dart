@@ -268,7 +268,7 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
     try {
       final rows = await _supa
           .from('contract')
-          .select('booking_id, contract_id, contract_status, signed_date, signed_at, otp_expiry, contract_pdf, total_amount')
+          .select('booking_id, contract_id, contract_status, signed_date, otp_expiry, contract_pdf, total_amount')
           .inFilter('booking_id', bookingIds);
       final mapByBooking = <String, Map<String, dynamic>>{};
       for (final raw in (rows as List)) {
@@ -344,7 +344,7 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
         contractStatus.isNotEmpty ||
         (row['contract_id'] ?? '').toString().trim().isNotEmpty;
     if (hasReachedSigningStep) {
-      return 'Step 2/3 • Sign';
+      return 'Step 2/3 • Sign contract';
     }
     return 'Step 1/3 • Checkout';
   }
@@ -718,6 +718,7 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
                           statusText: 'Holding',
                           statusColor: Colors.orange,
                           durationText: _durationText(r),
+                          infoLabel: 'Progress',
                           photoUrlBuilder: _vehiclePhotoPublicUrl,
                           actionLabel: 'Resume',
                           onAction: () => _resumeHoldingCheckout(r),
@@ -771,6 +772,7 @@ class _MyOrdersPageState extends State<MyOrdersPage> {
                           statusText: 'Incoming',
                           statusColor: Colors.blue,
                           durationText: _durationText(r),
+                          infoLabel: 'Progress',
                           photoUrlBuilder: _vehiclePhotoPublicUrl,
                           onTap: () => _openOrderDetails(r),
                         ),

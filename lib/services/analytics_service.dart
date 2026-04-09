@@ -38,6 +38,20 @@ class LeaserMetrics {
   final double netProfit;
 }
 
+class LeaserFleetMetrics {
+  const LeaserFleetMetrics({
+    required this.totalVehicles,
+    required this.freeNow,
+    required this.occupiedNow,
+    required this.unavailableNow,
+  });
+
+  final int totalVehicles;
+  final int freeNow;
+  final int occupiedNow;
+  final int unavailableNow;
+}
+
 class DailySeriesPoint {
   const DailySeriesPoint({
     required this.day,
@@ -73,14 +87,57 @@ class AnalyticsService {
     return st == 'paid';
   }
 
+  String _s(dynamic value) => value == null ? '' : value.toString().trim();
+
   double _dnum(dynamic v) {
     if (v == null) return 0;
     if (v is num) return v.toDouble();
     return double.tryParse(v.toString()) ?? 0;
   }
 
+  DateTime? _dt(dynamic value) {
+    if (value == null) return null;
+    if (value is DateTime) return value;
+    return DateTime.tryParse(value.toString());
+  }
+
+  bool _isFinishedStatus(String status) {
+    return status == 'cancel' ||
+        status == 'cancelled' ||
+        status == 'canceled' ||
+        status == 'deactive' ||
+        status == 'deactivated' ||
+        status == 'inactive' ||
+        status == 'completed' ||
+        status == 'complete' ||
+        status == 'done' ||
+        status == 'expired' ||
+        status == 'failed';
+  }
+
+  bool _isVehicleOccupiedNow(Map<String, dynamic> row, DateTime now) {
+    final status = _s(row['booking_status']).toLowerCase();
+    if (status.isEmpty) return false;
+    if (_isFinishedStatus(status)) return false;
+    if (status == 'holding') return false;
+
+    final dropoffCompletedAt = _dt(row['dropoff_completed_at']) ?? _dt(row['actual_dropoff_at']);
+    if (dropoffCompletedAt != null) return false;
+
+    final pickupCompletedAt = _dt(row['pickup_completed_at']);
+    if (pickupCompletedAt != null) return true;
+
+    if (status == 'active') return true;
+
+    final rentalStart = _dt(row['rental_start']);
+    if (rentalStart != null && !rentalStart.isAfter(now)) {
+      return true;
+    }
+
+    return false;
+  }
+
   Future<AdminMetrics> loadAdminMetrics({DateTime? start, DateTime? end}) async {
-    // Users (role = User)
     final uRows = await _client
         .from('app_user')
         .select('user_id,user_role')
@@ -95,7 +152,6 @@ class AnalyticsService {
       }
     }
 
-    // Leasers (approved/active)
     final lRows = await _client
         .from('leaser')
         .select('leaser_id,leaser_status')
@@ -110,7 +166,6 @@ class AnalyticsService {
       }
     }
 
-    // Orders (Paid bookings)
     var q = _client
         .from('booking')
         .select('booking_id,booking_date,booking_status,total_rental_amount')
@@ -181,7 +236,6 @@ class AnalyticsService {
       }
     }
 
-    // Fill missing days for a stable chart
     final out = <DailySeriesPoint>[];
     for (DateTime d = s; !d.isAfter(e); d = d.add(const Duration(days: 1))) {
       final list = map[_dateOnly(d)] ?? const [];
@@ -205,8 +259,6 @@ class AnalyticsService {
     DateTime? start,
     DateTime? end,
   }) async {
-    // Join booking->vehicle by vehicle_id relationship.
-    // Use inner join to filter to this leaser's vehicles.
     var q = _client
         .from('booking')
         .select('booking_id,booking_date,booking_status,total_rental_amount,vehicle:vehicle_id!inner(leaser_id)')
@@ -237,6 +289,66 @@ class AnalyticsService {
     final net = gross * (1 - PlatformRates.commissionRate);
 
     return LeaserMetrics(bookings: bookings, grossRevenue: gross, netProfit: net);
+  }
+
+  Future<LeaserFleetMetrics> loadLeaserFleetMetrics({
+    required String leaserId,
+  }) async {
+    final vehiclesResp = await _client
+        .from('vehicle')
+        .select('vehicle_id,vehicle_status')
+        .eq('leaser_id', leaserId)
+        .limit(5000);
+
+    final vehicles = <Map<String, dynamic>>[];
+    if (vehiclesResp is List) {
+      for (final row in vehiclesResp) {
+        if (row is Map) vehicles.add(Map<String, dynamic>.from(row));
+      }
+    }
+
+    final bookingResp = await _client
+        .from('booking')
+        .select('vehicle_id,booking_status,rental_start,rental_end,pickup_completed_at,dropoff_completed_at,actual_dropoff_at,vehicle:vehicle_id!inner(leaser_id)')
+        .eq('vehicle.leaser_id', leaserId)
+        .limit(20000);
+
+    final now = DateTime.now();
+    final occupiedIds = <String>{};
+    if (bookingResp is List) {
+      for (final row in bookingResp) {
+        if (row is! Map) continue;
+        final m = Map<String, dynamic>.from(row);
+        final vehicleId = _s(m['vehicle_id']);
+        if (vehicleId.isEmpty) continue;
+        if (_isVehicleOccupiedNow(m, now)) {
+          occupiedIds.add(vehicleId);
+        }
+      }
+    }
+
+    int freeNow = 0;
+    for (final vehicle in vehicles) {
+      final vehicleId = _s(vehicle['vehicle_id']);
+      final status = _s(vehicle['vehicle_status']).toLowerCase();
+      final isAvailableStatus = status == 'available';
+      if (vehicleId.isNotEmpty && isAvailableStatus && !occupiedIds.contains(vehicleId)) {
+        freeNow++;
+      }
+    }
+
+    final totalVehicles = vehicles.length;
+    final occupiedNow = occupiedIds.length;
+    final unavailableNow = totalVehicles - freeNow - occupiedNow < 0
+        ? 0
+        : totalVehicles - freeNow - occupiedNow;
+
+    return LeaserFleetMetrics(
+      totalVehicles: totalVehicles,
+      freeNow: freeNow,
+      occupiedNow: occupiedNow,
+      unavailableNow: unavailableNow,
+    );
   }
 
   Future<List<DailySeriesPoint>> leaserDailySeries({
