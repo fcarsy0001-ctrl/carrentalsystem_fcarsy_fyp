@@ -288,7 +288,7 @@ class _HomePageState extends State<HomePage> {
               'Hi, $_displayName',
               style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
             ),
-            const SizedBox(height: 6),
+            const SizedBox(height: 4),
             Text(
               'Find a car near you and start your trip in minutes.',
               style: TextStyle(color: Colors.grey.shade700),
@@ -492,7 +492,7 @@ class _HomePageState extends State<HomePage> {
                 return Column(
                   children: [
                     SizedBox(
-                      height: 290,
+                      height: 304,
                       child: ListView.separated(
                         scrollDirection: Axis.horizontal,
                         itemCount: vehicles.length,
@@ -632,7 +632,7 @@ class _VehicleCard extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               SizedBox(
-                height: 140,
+                height: 136,
                 width: double.infinity,
                 child: photoUrl == null
                     ? Container(
@@ -666,7 +666,7 @@ class _VehicleCard extends StatelessWidget {
                       '${vehicle.type} • ${vehicle.seats} seats',
                       style: TextStyle(color: Colors.grey.shade700),
                     ),
-                    const SizedBox(height: 10),
+                    const SizedBox(height: 8),
                     Row(
                       children: [
                         Expanded(
@@ -681,7 +681,7 @@ class _VehicleCard extends StatelessWidget {
                         ),
                       ],
                     ),
-                    const SizedBox(height: 6),
+                    const SizedBox(height: 4),
                     Text(
                       vehicle.location.isEmpty ? '-' : vehicle.location,
                       maxLines: 1,
@@ -986,7 +986,7 @@ class _FeaturedBanner extends StatelessWidget {
                     fontSize: 16,
                   ),
                 ),
-                const SizedBox(height: 6),
+                const SizedBox(height: 4),
                 Text(
                   subtitle,
                   style: TextStyle(color: cs.onPrimaryContainer),
@@ -1141,7 +1141,7 @@ class _CarCard extends StatelessWidget {
               ),
             ],
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 8),
           Container(
             height: 72,
             decoration: BoxDecoration(
@@ -1269,4 +1269,5 @@ class _CarListTile extends StatelessWidget {
     );
   }
 }
+
 
