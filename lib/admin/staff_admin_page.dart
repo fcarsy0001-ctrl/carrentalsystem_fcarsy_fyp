@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../config/supabase_config.dart';
 import '../services/admin_access_service.dart';
+import '../utils/my_validators.dart';
 import 'widgets/admin_ui.dart';
 
 /// SuperAdmin only: manage Staff Admin (SAdmin).
@@ -324,10 +327,20 @@ class _StaffAdminPageState extends State<StaffAdminPage> {
               primaryActions: [
                 FilledButton.icon(
                   onPressed: () async {
-                    final ok = await Navigator.of(context).push<bool>(
+                    final result = await Navigator.of(context).push<dynamic>(
                       MaterialPageRoute(builder: (_) => const _CreateStaffAdminPage()),
                     );
-                    if (ok == true) await _refresh();
+                    if (!mounted) return;
+                    final created = result == true || (result is Map && result['ok'] == true);
+                    if (created) {
+                      final message = result is Map ? (result['message'] ?? '').toString().trim() : '';
+                      if (message.isNotEmpty) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text(message)),
+                        );
+                      }
+                      await _refresh();
+                    }
                   },
                   icon: const Icon(Icons.person_add_alt_1),
                   label: const Text('Add staff'),
@@ -773,6 +786,7 @@ class _CreateStaffAdminPageState extends State<_CreateStaffAdminPage> {
 
   final _formKey = GlobalKey<FormState>();
   bool _busy = false;
+  bool _showPw = false;
 
   final _sadminId = TextEditingController();
   final _name = TextEditingController();
@@ -780,6 +794,8 @@ class _CreateStaffAdminPageState extends State<_CreateStaffAdminPage> {
   final _password = TextEditingController();
   final _salary = TextEditingController();
   String _status = 'Active';
+
+  String _s(dynamic v) => v == null ? '' : v.toString();
 
   @override
   void dispose() {
@@ -789,6 +805,219 @@ class _CreateStaffAdminPageState extends State<_CreateStaffAdminPage> {
     _password.dispose();
     _salary.dispose();
     super.dispose();
+  }
+
+  bool _isJwtValidationIssue(Object error) {
+    final message = error.toString().toLowerCase();
+    return message.contains('invalid jwt') ||
+        message.contains('missing authorization header') ||
+        message.contains('functionexception(status: 401') ||
+        message.contains('status: 401');
+  }
+
+  bool _isDuplicateKey(Object error) {
+    final message = error.toString().toLowerCase();
+    return message.contains('duplicate key') || message.contains('23505');
+  }
+
+  List<Map<String, String>> _functionHeaderVariants(String accessToken) {
+    return [
+      const <String, String>{},
+      <String, String>{'Authorization': 'Bearer $accessToken'},
+      <String, String>{'x-user-jwt': accessToken},
+      <String, String>{
+        'Authorization': 'Bearer $accessToken',
+        'x-user-jwt': accessToken,
+      },
+    ];
+  }
+
+  Future<dynamic> _invokeCreateSadminFunction(
+    Map<String, dynamic> payload,
+    String accessToken,
+  ) async {
+    Object? lastError;
+
+    for (final name in const ['create_sadmin', 'create-sadmin']) {
+      for (final headers in _functionHeaderVariants(accessToken)) {
+        try {
+          final res = await _supa.functions.invoke(
+            name,
+            headers: headers.isEmpty ? null : headers,
+            body: payload,
+          );
+          return res.data;
+        } on FunctionException catch (e) {
+          final lower = '${e.details ?? ''} ${e.reasonPhrase ?? ''}'.toLowerCase();
+          if (e.status == 404 || lower.contains('not found')) {
+            break;
+          }
+          lastError = e;
+          if (_isJwtValidationIssue(e)) {
+            continue;
+          }
+          rethrow;
+        } catch (e) {
+          lastError = e;
+          if (_isJwtValidationIssue(e)) {
+            continue;
+          }
+          rethrow;
+        }
+      }
+    }
+
+    if (lastError != null) {
+      throw Exception(lastError.toString());
+    }
+    throw Exception('create_sadmin Edge Function was not found.');
+  }
+
+  Future<String> _generateSadminId() async {
+    try {
+      final row = await _supa
+          .from('staff_admin')
+          .select('sadmin_id')
+          .order('sadmin_id', ascending: false)
+          .limit(1)
+          .maybeSingle();
+      final lastId = _s(row?['sadmin_id']).trim();
+      final match = RegExp(r'^([A-Za-z]+)(\d+)$').firstMatch(lastId);
+      if (match != null) {
+        final prefix = match.group(1) ?? 'S';
+        final next = (int.tryParse(match.group(2) ?? '') ?? 0) + 1;
+        final digits = next.toString();
+        return '$prefix${digits.length < 3 ? digits.padLeft(3, '0') : digits}';
+      }
+    } catch (_) {
+      // ignore and fall back below
+    }
+    final ts = DateTime.now().millisecondsSinceEpoch.toString();
+    return 'S${ts.substring(ts.length - 6)}';
+  }
+
+
+  Future<Map<String, dynamic>> _createDirect() async {
+    final normalizedEmail = _email.text.trim().toLowerCase();
+    final temp = SupabaseClient(
+      SupabaseConfig.supabaseUrl,
+      SupabaseConfig.supabaseAnonKey,
+      authOptions: AuthClientOptions(
+        authFlowType: AuthFlowType.pkce,
+        pkceAsyncStorage: SharedPreferencesGotrueAsyncStorage(),
+      ),
+    );
+
+    try {
+      final existing = await _supa
+          .from('staff_admin')
+          .select('sadmin_id')
+          .eq('sadmin_email', normalizedEmail)
+          .limit(1)
+          .maybeSingle();
+      if (existing != null) {
+        final existingId = _s(existing['sadmin_id']).trim();
+        throw Exception(
+          existingId.isEmpty
+              ? 'This staff email already exists.'
+              : 'This staff email already exists: $existingId',
+        );
+      }
+    } catch (e) {
+      final msg = e.toString();
+      if (msg.contains('already exists')) rethrow;
+    }
+
+    AuthResponse auth;
+    try {
+      auth = await temp.auth.signUp(
+        email: normalizedEmail,
+        password: _password.text,
+      );
+    } on AuthException catch (e) {
+      final msg = e.message.toLowerCase();
+      if (msg.contains('already registered') || msg.contains('user already') || msg.contains('exists')) {
+        throw Exception('This staff email is already registered in Supabase Auth.');
+      }
+      rethrow;
+    }
+
+    var authUid = auth.user?.id?.trim() ?? '';
+    if (authUid.isEmpty) {
+      authUid = temp.auth.currentUser?.id?.trim() ?? '';
+    }
+    if (authUid.isEmpty) {
+      try {
+        final signIn = await temp.auth.signInWithPassword(
+          email: normalizedEmail,
+          password: _password.text,
+        );
+        authUid = signIn.user?.id?.trim() ?? temp.auth.currentUser?.id?.trim() ?? '';
+      } catch (_) {}
+    }
+    if (authUid.isEmpty) {
+      try {
+        await temp.auth.signOut();
+      } catch (_) {}
+      throw Exception('Sign up succeeded but no auth uid was returned.');
+    }
+
+    final hasAuthenticatedSession = temp.auth.currentSession != null;
+    if (!hasAuthenticatedSession) {
+      try {
+        await temp.auth.signOut();
+      } catch (_) {}
+      throw Exception(
+        'The staff Auth account was created, but Supabase did not return a login session for that new account. '
+        'Direct insert cannot continue. Please use the create_sadmin Edge Function, or turn off Confirm email for this staff creation flow.',
+      );
+    }
+
+    final salaryText = _salary.text.trim();
+    final payload = <String, dynamic>{
+      'sadmin_id': _sadminId.text.trim().isEmpty ? await _generateSadminId() : _sadminId.text.trim(),
+      'auth_uid': authUid,
+      'sadmin_name': _name.text.trim(),
+      'sadmin_email': normalizedEmail,
+      'sadmin_salary': salaryText.isEmpty ? null : num.tryParse(salaryText),
+      'sadmin_status': _status,
+    };
+
+    Object? lastError;
+    for (var attempt = 0; attempt < 8; attempt++) {
+      try {
+        await temp.from('staff_admin').insert(payload);
+        try {
+          await temp.auth.signOut();
+        } catch (_) {}
+        return {
+          'ok': true,
+          'sadmin_id': payload['sadmin_id'],
+          'auth_uid': authUid,
+          'fallback': true,
+        };
+      } catch (e) {
+        lastError = e;
+        if (_isDuplicateKey(e) && _sadminId.text.trim().isEmpty) {
+          payload['sadmin_id'] = await _generateSadminId();
+          await Future<void>.delayed(Duration(milliseconds: 120 * (attempt + 1)));
+          continue;
+        }
+        final lower = e.toString().toLowerCase();
+        if (lower.contains('row-level security') || lower.contains('42501')) {
+          throw Exception(
+            'Direct fallback could create the Auth account, but staff_admin insert is blocked by RLS. '
+            'Please allow self-insert on staff_admin for auth_uid = auth.uid(), or fix the create_sadmin Edge Function JWT config.',
+          );
+        }
+        rethrow;
+      }
+    }
+
+    try {
+      await temp.auth.signOut();
+    } catch (_) {}
+    throw Exception(lastError?.toString() ?? 'Failed to create staff_admin after multiple retries.');
   }
 
   Future<void> _create() async {
@@ -805,26 +1034,27 @@ class _CreateStaffAdminPageState extends State<_CreateStaffAdminPage> {
       final payload = {
         'sadmin_id': _sadminId.text.trim().isEmpty ? null : _sadminId.text.trim(),
         'sadmin_name': _name.text.trim(),
-        'sadmin_email': _email.text.trim(),
+        'sadmin_email': _email.text.trim().toLowerCase(),
         'sadmin_password': _password.text,
         'sadmin_salary': _salary.text.trim().isEmpty ? null : num.tryParse(_salary.text.trim()),
         'sadmin_status': _status,
       };
 
-      final res = await _supa.functions.invoke(
-        'create_sadmin',
-        headers: {
-          'Authorization': 'Bearer ${session.accessToken}',
-          'x-user-jwt': session.accessToken,
-        },
-        body: payload,
-      );
+      dynamic responseData;
+      try {
+        responseData = await _invokeCreateSadminFunction(payload, session.accessToken);
+      } catch (e) {
+        if (!_isJwtValidationIssue(e)) rethrow;
+        final direct = await _createDirect();
+        responseData = direct['sadmin_id'] ?? direct;
+      }
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Created: ${res.data ?? 'OK'}')),
-      );
-      Navigator.of(context).pop(true);
+      final message = 'Created: ${responseData ?? 'OK'}';
+      Navigator.of(context).pop(<String, dynamic>{
+        'ok': true,
+        'message': message,
+      });
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -846,7 +1076,8 @@ class _CreateStaffAdminPageState extends State<_CreateStaffAdminPage> {
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
             children: [
               Text(
-                'This will create a staff admin Auth user (email+password) and a staff_admin row.\n\nYou must deploy the Edge Function `create_sadmin` first.',
+                'This will create a staff admin Auth user (email+password) and a staff_admin row.\n\n'
+                'The app will try the Edge Function `create_sadmin` first, and fall back to direct signup if the function is blocked by Invalid JWT.',
                 style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
               ),
               const SizedBox(height: 12),
@@ -856,41 +1087,52 @@ class _CreateStaffAdminPageState extends State<_CreateStaffAdminPage> {
                   labelText: 'SAdmin ID (optional)',
                   hintText: 'S001 (leave empty for auto)',
                 ),
+                validator: (v) {
+                  final value = (v ?? '').trim();
+                  if (value.isEmpty) return null;
+                  if (!RegExp(r'^[A-Za-z][A-Za-z0-9_-]{1,19}$').hasMatch(value)) {
+                    return 'Use 2 to 20 letters, numbers, _ or -';
+                  }
+                  return null;
+                },
               ),
               const SizedBox(height: 10),
               TextFormField(
                 controller: _name,
                 decoration: const InputDecoration(labelText: 'SAdmin Name'),
-                validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null,
+                validator: (v) => MyValidators.personName(v, fieldName: 'SAdmin name'),
               ),
               const SizedBox(height: 10),
               TextFormField(
                 controller: _email,
-                decoration: const InputDecoration(labelText: 'SAdmin Email (Gmail)') ,
+                decoration: const InputDecoration(labelText: 'SAdmin Email'),
                 keyboardType: TextInputType.emailAddress,
-                validator: (v) {
-                  final t = (v ?? '').trim();
-                  if (t.isEmpty) return 'Required';
-                  if (!t.contains('@')) return 'Invalid email';
-                  return null;
-                },
+                validator: (v) => MyValidators.email(v),
               ),
               const SizedBox(height: 10),
               TextFormField(
                 controller: _password,
-                decoration: const InputDecoration(labelText: 'Password'),
-                obscureText: true,
-                validator: (v) {
-                  final t = (v ?? '');
-                  if (t.length < 8) return 'Min 8 characters';
-                  return null;
-                },
+                decoration: InputDecoration(
+                  labelText: 'Password',
+                  suffixIcon: IconButton(
+                    icon: Icon(_showPw ? Icons.visibility_off : Icons.visibility),
+                    onPressed: _busy ? null : () => setState(() => _showPw = !_showPw),
+                  ),
+                ),
+                obscureText: !_showPw,
+                validator: (v) => MyValidators.password(v),
               ),
               const SizedBox(height: 10),
               TextFormField(
                 controller: _salary,
                 decoration: const InputDecoration(labelText: 'Salary (optional)'),
                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                validator: (v) => MyValidators.numericText(
+                  v,
+                  required: false,
+                  fieldName: 'Salary',
+                  min: 0,
+                ),
               ),
               const SizedBox(height: 10),
               DropdownButtonFormField<String>(
@@ -900,7 +1142,7 @@ class _CreateStaffAdminPageState extends State<_CreateStaffAdminPage> {
                   DropdownMenuItem(value: 'Active', child: Text('Active')),
                   DropdownMenuItem(value: 'Inactive', child: Text('Inactive')),
                 ],
-                onChanged: (v) => setState(() => _status = v ?? 'Active'),
+                onChanged: _busy ? null : (v) => setState(() => _status = v ?? 'Active'),
               ),
               const SizedBox(height: 18),
               FilledButton.icon(

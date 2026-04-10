@@ -164,11 +164,7 @@ class _LoginPageState extends State<LoginPage> {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   // Logo and Title
-                  Icon(
-                    Icons.directions_car_rounded,
-                    size: 80,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
+                  _LoginBrandMark(color: Theme.of(context).colorScheme.primary),
                   const SizedBox(height: 16),
                   Text(
                     'Car Rental System',
@@ -417,6 +413,38 @@ class _LoginPageState extends State<LoginPage> {
                   ),
                 ],
               ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+
+class _LoginBrandMark extends StatelessWidget {
+  const _LoginBrandMark({required this.color});
+
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Container(
+        width: 76,
+        height: 76,
+        decoration: BoxDecoration(
+          border: Border.all(color: color, width: 2),
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Center(
+          child: Text(
+            'CR',
+            style: TextStyle(
+              fontSize: 28,
+              fontWeight: FontWeight.w800,
+              color: color,
+              letterSpacing: 1.2,
             ),
           ),
         ),

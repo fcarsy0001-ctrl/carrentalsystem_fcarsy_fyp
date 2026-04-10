@@ -1,11 +1,9 @@
-import 'dart:convert';
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/support_ticket_service.dart';
 import 'support_chat_page.dart';
+import 'support_hidden_ticket_store.dart';
 
 class UserSupportPage extends StatefulWidget {
   const UserSupportPage({super.key});
@@ -65,29 +63,16 @@ class _UserSupportPageState extends State<UserSupportPage> {
     }
   }
 
-  Future<File> _hiddenTicketsFile() async {
-    final uid = Supabase.instance.client.auth.currentUser?.id ?? 'guest';
-    final safeUid = uid.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
-    return File('${Directory.systemTemp.path}${Platform.pathSeparator}support_hidden_$safeUid.json');
+  String _hiddenTicketUserKey() {
+    return Supabase.instance.client.auth.currentUser?.id ?? 'guest';
   }
 
   Future<Set<String>> _readHiddenTicketIds() async {
-    try {
-      final file = await _hiddenTicketsFile();
-      if (!await file.exists()) return <String>{};
-      final text = await file.readAsString();
-      if (text.trim().isEmpty) return <String>{};
-      final decoded = jsonDecode(text);
-      if (decoded is! List) return <String>{};
-      return decoded.map((e) => e.toString().trim()).where((e) => e.isNotEmpty).toSet();
-    } catch (_) {
-      return <String>{};
-    }
+    return readHiddenTicketIds(_hiddenTicketUserKey());
   }
 
   Future<void> _writeHiddenTicketIds(Set<String> ids) async {
-    final file = await _hiddenTicketsFile();
-    await file.writeAsString(jsonEncode(ids.toList()..sort()));
+    await writeHiddenTicketIds(_hiddenTicketUserKey(), ids);
   }
 
   Future<_UserSupportData> _load() async {

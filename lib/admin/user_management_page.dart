@@ -1,9 +1,9 @@
-import 'package:email_validator/email_validator.dart';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/admin_access_service.dart';
 import '../services/admin_user_service.dart';
+import '../utils/my_validators.dart';
 import 'widgets/admin_ui.dart';
 
 /// Admin/Staff: Manage normal users stored in `public.app_user`.
@@ -558,26 +558,21 @@ class _CreateUserPageState extends State<_CreateUserPage> {
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
             children: [
               Text(
-                'This will create a Supabase Auth user and an app_user record (Role=User).\n\nYou must deploy the Edge Function `create_app_user`.',
+                'This will create a Supabase Auth user and an app_user record (Role=User).\n\nThe app will try the Edge Function `create_app_user` first, and fall back to direct signup if the function is blocked by Invalid JWT.',
                 style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
               ),
               const SizedBox(height: 12),
               TextFormField(
                 controller: _name,
                 decoration: const InputDecoration(labelText: 'Name'),
-                validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null,
+                validator: (v) => MyValidators.personName(v, fieldName: 'Name'),
               ),
               const SizedBox(height: 10),
               TextFormField(
                 controller: _email,
                 decoration: const InputDecoration(labelText: 'Email'),
                 keyboardType: TextInputType.emailAddress,
-                validator: (v) {
-                  final t = (v ?? '').trim();
-                  if (t.isEmpty) return 'Required';
-                  if (!EmailValidator.validate(t)) return 'Invalid email';
-                  return null;
-                },
+                validator: (v) => MyValidators.email(v),
               ),
               const SizedBox(height: 10),
               TextFormField(
@@ -590,57 +585,28 @@ class _CreateUserPageState extends State<_CreateUserPage> {
                   ),
                 ),
                 obscureText: !_showPw,
-                validator: (v) {
-                  final t = (v ?? '');
-                  if (t.trim().isEmpty) return 'Required';
-                  if (t.length < 8) return 'Min 8 characters';
-                  if (!RegExp(r'[A-Z]').hasMatch(t)) return 'Need 1 uppercase';
-                  if (!RegExp(r'[a-z]').hasMatch(t)) return 'Need 1 lowercase';
-                  if (!RegExp(r'[0-9]').hasMatch(t)) return 'Need 1 number';
-                  return null;
-                },
+                validator: (v) => MyValidators.password(v),
               ),
               const SizedBox(height: 10),
               TextFormField(
                 controller: _pw2,
                 decoration: const InputDecoration(labelText: 'Confirm Password'),
                 obscureText: !_showPw,
-                validator: (v) {
-                  final t = (v ?? '');
-                  if (t != _pw.text) return 'Password not match';
-                  return null;
-                },
+                validator: (v) => MyValidators.confirmPassword(v, _pw.text),
               ),
               const SizedBox(height: 10),
               TextFormField(
                 controller: _phone,
                 decoration: const InputDecoration(labelText: 'Phone (e.g. +60...)'),
                 keyboardType: TextInputType.phone,
-                validator: (v) {
-                  final t = (v ?? '').trim();
-                  if (t.isEmpty) return 'Required';
-                  final digits = _digitsOnly(t);
-                  if (digits.isEmpty) return 'Required';
-                  // Malaysia: allow formats like 012-3456789 or +6012-3456789
-                  var d = digits;
-                  if (d.startsWith('60')) d = d.substring(2);
-                  if (d.startsWith('0')) d = d.substring(1);
-                  if (d.length < 9 || d.length > 10) return 'Invalid phone (MY)';
-                  return null;
-                },
+                validator: (v) => MyValidators.malaysiaPhone(v),
               ),
               const SizedBox(height: 10),
               TextFormField(
                 controller: _ic,
                 decoration: const InputDecoration(labelText: 'IC No (12 digits)'),
                 keyboardType: TextInputType.number,
-                validator: (v) {
-                  final t = (v ?? '').trim();
-                  if (t.isEmpty) return 'Required';
-                  final digits = _digitsOnly(t);
-                  if (digits.length != 12) return 'IC must be 12 digits';
-                  return null;
-                },
+                validator: (v) => MyValidators.icNumber(v),
               ),
               const SizedBox(height: 10),
               DropdownButtonFormField<String>(
@@ -797,38 +763,21 @@ class _EditUserPageState extends State<_EditUserPage> {
               TextFormField(
                 controller: _name,
                 decoration: const InputDecoration(labelText: 'Name'),
-                validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null,
+                validator: (v) => MyValidators.personName(v, fieldName: 'Name'),
               ),
               const SizedBox(height: 10),
               TextFormField(
                 controller: _phone,
                 decoration: const InputDecoration(labelText: 'Phone'),
                 keyboardType: TextInputType.phone,
-                validator: (v) {
-                  final t = (v ?? '').trim();
-                  if (t.isEmpty) return 'Required';
-                  final digits = _digitsOnly(t);
-                  if (digits.isEmpty) return 'Required';
-                  // Malaysia: allow formats like 012-3456789 or +6012-3456789
-                  var d = digits;
-                  if (d.startsWith('60')) d = d.substring(2);
-                  if (d.startsWith('0')) d = d.substring(1);
-                  if (d.length < 9 || d.length > 10) return 'Invalid phone (MY)';
-                  return null;
-                },
+                validator: (v) => MyValidators.malaysiaPhone(v),
               ),
               const SizedBox(height: 10),
               TextFormField(
                 controller: _ic,
                 decoration: const InputDecoration(labelText: 'IC No'),
                 keyboardType: TextInputType.number,
-                validator: (v) {
-                  final t = (v ?? '').trim();
-                  if (t.isEmpty) return 'Required';
-                  final digits = _digitsOnly(t);
-                  if (digits.length != 12) return 'IC must be 12 digits';
-                  return null;
-                },
+                validator: (v) => MyValidators.icNumber(v),
               ),
               const SizedBox(height: 10),
               DropdownButtonFormField<String>(

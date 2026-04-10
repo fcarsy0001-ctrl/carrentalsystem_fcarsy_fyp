@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -38,14 +39,24 @@ class _DriverLicenseSubmitPageState extends State<DriverLicenseSubmitPage> {
 
   Future<void> _pickExpiry() async {
     final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
     final picked = await showDatePicker(
       context: context,
       initialDate: _expiry ?? DateTime(now.year + 1, now.month, now.day),
-      firstDate: DateTime(now.year - 5),
+      firstDate: today,
       lastDate: DateTime(now.year + 20),
     );
     if (picked == null) return;
     setState(() => _expiry = picked);
+  }
+
+  bool get _isExpirySoon {
+    if (_expiry == null) return false;
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final expiryDate = DateTime(_expiry!.year, _expiry!.month, _expiry!.day);
+    final daysLeft = expiryDate.difference(today).inDays;
+    return daysLeft >= 0 && daysLeft <= 10;
   }
 
   Future<void> _takePhoto(ImageSource source) async {
@@ -76,6 +87,17 @@ class _DriverLicenseSubmitPageState extends State<DriverLicenseSubmitPage> {
       );
       return;
     }
+
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final selectedExpiry = DateTime(_expiry!.year, _expiry!.month, _expiry!.day);
+    if (selectedExpiry.isBefore(today)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Expiry date cannot be in the past')),
+      );
+      return;
+    }
+
     if (_photo == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please take a clear licence photo')),
@@ -139,13 +161,27 @@ class _DriverLicenseSubmitPageState extends State<DriverLicenseSubmitPage> {
                     const SizedBox(height: 12),
                     TextFormField(
                       controller: _licenseNo,
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.digitsOnly,
+                        LengthLimitingTextInputFormatter(12),
+                      ],
                       decoration: const InputDecoration(
                         labelText: 'Licence number',
+                        helperText:
+                            'Generally, this is the same as your 12-digit MyKad number.',
                         border: OutlineInputBorder(),
                       ),
                       validator: (v) {
-                        if (v == null || v.trim().isEmpty) {
+                        final value = v?.trim() ?? '';
+                        if (value.isEmpty) {
                           return 'Licence number is required';
+                        }
+                        if (!RegExp(r'^\d+$').hasMatch(value)) {
+                          return 'Licence number must contain digits only';
+                        }
+                        if (value.length > 12) {
+                          return 'Licence number cannot be more than 12 digits';
                         }
                         return null;
                       },
@@ -153,13 +189,24 @@ class _DriverLicenseSubmitPageState extends State<DriverLicenseSubmitPage> {
                     const SizedBox(height: 12),
                     TextFormField(
                       controller: _licenseName,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.allow(RegExp(r"[A-Za-z\s'`.-]")),
+                        LengthLimitingTextInputFormatter(100),
+                      ],
                       decoration: const InputDecoration(
                         labelText: 'Name on licence',
                         border: OutlineInputBorder(),
                       ),
                       validator: (v) {
-                        if (v == null || v.trim().isEmpty) {
+                        final value = v?.trim() ?? '';
+                        if (value.isEmpty) {
                           return 'Name is required';
+                        }
+                        if (value.length > 100) {
+                          return 'Name cannot be more than 100 characters';
+                        }
+                        if (!RegExp(r"^[A-Za-z\s'`.-]+$").hasMatch(value)) {
+                          return 'Name on licence can contain letters only';
                         }
                         return null;
                       },
@@ -198,6 +245,25 @@ class _DriverLicenseSubmitPageState extends State<DriverLicenseSubmitPage> {
                         ),
                       ),
                     ),
+                    if (_isExpirySoon) ...[
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          const Icon(Icons.warning_amber_rounded,
+                              color: Colors.orange, size: 18),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              '! Your licence is about to expire.',
+                              style: TextStyle(
+                                color: Colors.orange.shade800,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                     const SizedBox(height: 14),
                     const Text(
                       'Licence photo (required)',

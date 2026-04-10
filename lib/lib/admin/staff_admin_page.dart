@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../config/supabase_config.dart';
 import '../services/admin_access_service.dart';
+import '../utils/my_validators.dart';
 import 'widgets/admin_ui.dart';
 
 /// SuperAdmin only: manage Staff Admin (SAdmin).
@@ -38,6 +41,20 @@ class _StaffAdminPageState extends State<StaffAdminPage> {
     });
   }
 
+  int? _parseReviewRating(dynamic value) {
+    if (value is num) {
+      final n = value.toInt();
+      return (n >= 1 && n <= 5) ? n : null;
+    }
+    final raw = _s(value).trim();
+    if (raw.startsWith('[STAFF_REVIEW:') && raw.endsWith(']')) {
+      final parsed = int.tryParse(raw.substring('[STAFF_REVIEW:'.length, raw.length - 1));
+      return (parsed != null && parsed >= 1 && parsed <= 5) ? parsed : null;
+    }
+    final parsed = int.tryParse(raw);
+    return (parsed != null && parsed >= 1 && parsed <= 5) ? parsed : null;
+  }
+
   Future<List<Map<String, dynamic>>> _load() async {
     final rows = await _supa
         .from('staff_admin')
@@ -48,9 +65,13 @@ class _StaffAdminPageState extends State<StaffAdminPage> {
         .toList();
 
     final authUidToStaffId = <String, String>{};
+    final knownStaffIds = <String>{};
     for (final row in list) {
       final staffId = _s(row['sadmin_id']).trim();
       final authUid = _s(row['auth_uid']).trim();
+      if (staffId.isNotEmpty) {
+        knownStaffIds.add(staffId);
+      }
       if (staffId.isNotEmpty && authUid.isNotEmpty) {
         authUidToStaffId[authUid] = staffId;
       }
@@ -58,6 +79,8 @@ class _StaffAdminPageState extends State<StaffAdminPage> {
       row['review_count'] = 0;
       row['average_rating'] = 0.0;
     }
+
+    final ticketToStaffId = <String, String>{};
 
     try {
       final ticketRows = await _supa
@@ -75,6 +98,7 @@ class _StaffAdminPageState extends State<StaffAdminPage> {
           staffId = authUidToStaffId[_s(ticket['assigned_admin_uid']).trim()] ?? '';
         }
         if (staffId.isEmpty) continue;
+        ticketToStaffId[ticketId] = staffId;
         countedTicketIdsByStaff.putIfAbsent(staffId, () => <String>{}).add(ticketId);
       }
 
@@ -84,93 +108,68 @@ class _StaffAdminPageState extends State<StaffAdminPage> {
       }
     } catch (_) {}
 
-    final totalRating = <String, int>{};
-    final totalCount = <String, int>{};
-    final ratedTicketIdsByStaff = <String, Set<String>>{};
-
     try {
-      List reviewRows = const [];
+      final totalRating = <String, int>{};
+      final totalCount = <String, int>{};
+      final ratedTicketIds = <String>{};
+
       try {
-        final result = await _supa.from('support_ticket_review').select('ticket_id,staff_id,rating');
-        if (result is List) reviewRows = result;
-      } catch (_) {
-        final result = await _supa.from('support_ticket_review').select('ticket_id,staff_auth_uid,rating');
-        if (result is List) reviewRows = result;
-      }
+        final reviewRows = await _supa
+            .from('support_ticket_review')
+            .select('ticket_id,staff_id,rating');
+        if (reviewRows is List) {
+          for (final raw in reviewRows) {
+            final review = Map<String, dynamic>.from(raw as Map);
+            final ticketId = _s(review['ticket_id']).trim();
+            var staffId = _s(review['staff_id']).trim();
+            if (staffId.isNotEmpty && !knownStaffIds.contains(staffId)) {
+              staffId = authUidToStaffId[staffId] ?? ticketToStaffId[ticketId] ?? '';
+            }
+            if (staffId.isEmpty) {
+              staffId = ticketToStaffId[ticketId] ?? '';
+            }
+            final rating = _parseReviewRating(review['rating']);
+            if (staffId.isEmpty || rating == null) continue;
 
-      for (final raw in reviewRows) {
-        final review = Map<String, dynamic>.from(raw as Map);
-        final ticketId = _s(review['ticket_id']).trim();
-        var staffId = _s(review['staff_id']).trim();
-        if (staffId.isEmpty) {
-          staffId = authUidToStaffId[_s(review['staff_auth_uid']).trim()] ?? '';
-        }
-        if (staffId.isEmpty) continue;
-
-        final rating = _parseRating(review['rating']);
-        if (rating == null) continue;
-
-        final staffTicketSet = ratedTicketIdsByStaff.putIfAbsent(staffId, () => <String>{});
-        if (ticketId.isNotEmpty && staffTicketSet.contains(ticketId)) continue;
-        if (ticketId.isNotEmpty) {
-          staffTicketSet.add(ticketId);
-        }
-
-        totalRating[staffId] = (totalRating[staffId] ?? 0) + rating;
-        totalCount[staffId] = (totalCount[staffId] ?? 0) + 1;
-      }
-    } catch (_) {}
-
-    try {
-      final ticketRows = await _supa
-          .from('support_ticket')
-          .select('ticket_id,handled_by_staff_id,assigned_admin_uid,assigned_admin_role');
-      final ticketToStaffId = <String, String>{};
-      if (ticketRows is List) {
-        for (final raw in ticketRows) {
-          final ticket = Map<String, dynamic>.from(raw as Map);
-          final ticketId = _s(ticket['ticket_id']).trim();
-          if (ticketId.isEmpty) continue;
-
-          var staffId = _s(ticket['handled_by_staff_id']).trim();
-          if (staffId.isEmpty && _s(ticket['assigned_admin_role']).trim().toLowerCase() == 'staff') {
-            staffId = authUidToStaffId[_s(ticket['assigned_admin_uid']).trim()] ?? '';
+            totalRating[staffId] = (totalRating[staffId] ?? 0) + rating;
+            totalCount[staffId] = (totalCount[staffId] ?? 0) + 1;
+            if (ticketId.isNotEmpty) {
+              ratedTicketIds.add(ticketId);
+            }
           }
-          if (staffId.isEmpty) continue;
-          ticketToStaffId[ticketId] = staffId;
         }
-      }
+      } catch (_) {}
 
-      final messageRows = await _supa
-          .from('support_message')
-          .select('ticket_id,message,created_at')
-          .order('created_at', ascending: false);
-      if (messageRows is List) {
-        for (final raw in messageRows) {
-          final msg = Map<String, dynamic>.from(raw as Map);
-          final ticketId = _s(msg['ticket_id']).trim();
-          if (ticketId.isEmpty) continue;
-          final staffId = ticketToStaffId[ticketId] ?? '';
-          if (staffId.isEmpty) continue;
-          final rating = _extractHiddenReviewRating(msg['message']);
-          if (rating == null) continue;
+      try {
+        final hiddenReviewRows = await _supa
+            .from('support_message')
+            .select('ticket_id,message')
+            .like('message', '[STAFF_REVIEW:%');
+        if (hiddenReviewRows is List) {
+          for (final raw in hiddenReviewRows) {
+            final review = Map<String, dynamic>.from(raw as Map);
+            final ticketId = _s(review['ticket_id']).trim();
+            if (ticketId.isEmpty || ratedTicketIds.contains(ticketId)) continue;
 
-          final staffTicketSet = ratedTicketIdsByStaff.putIfAbsent(staffId, () => <String>{});
-          if (staffTicketSet.contains(ticketId)) continue;
-          staffTicketSet.add(ticketId);
-          totalRating[staffId] = (totalRating[staffId] ?? 0) + rating;
-          totalCount[staffId] = (totalCount[staffId] ?? 0) + 1;
+            final staffId = ticketToStaffId[ticketId] ?? '';
+            final rating = _parseReviewRating(review['message']);
+            if (staffId.isEmpty || rating == null) continue;
+
+            totalRating[staffId] = (totalRating[staffId] ?? 0) + rating;
+            totalCount[staffId] = (totalCount[staffId] ?? 0) + 1;
+            ratedTicketIds.add(ticketId);
+          }
         }
+      } catch (_) {}
+
+      for (final row in list) {
+        final staffId = _s(row['sadmin_id']).trim();
+        final count = totalCount[staffId] ?? 0;
+        final sum = totalRating[staffId] ?? 0;
+        row['review_count'] = count;
+        row['average_rating'] = count == 0 ? 0.0 : sum / count;
       }
     } catch (_) {}
-
-    for (final row in list) {
-      final staffId = _s(row['sadmin_id']).trim();
-      final count = totalCount[staffId] ?? 0;
-      final sum = totalRating[staffId] ?? 0;
-      row['review_count'] = count;
-      row['average_rating'] = count == 0 ? 0.0 : sum / count;
-    }
 
     return list;
   }
@@ -187,24 +186,6 @@ class _StaffAdminPageState extends State<StaffAdminPage> {
   }
 
   String _s(dynamic v) => v == null ? '' : v.toString();
-
-
-  int? _parseRating(dynamic value) {
-    if (value == null) return null;
-    if (value is num) {
-      final n = value.toInt();
-      return (n >= 1 && n <= 5) ? n : null;
-    }
-    final n = int.tryParse(_s(value));
-    return (n != null && n >= 1 && n <= 5) ? n : null;
-  }
-
-  int? _extractHiddenReviewRating(dynamic value) {
-    final raw = _s(value);
-    const prefix = '[STAFF_REVIEW:';
-    if (!raw.startsWith(prefix) || !raw.endsWith(']')) return null;
-    return _parseRating(raw.substring(prefix.length, raw.length - 1));
-  }
 
   bool get _isSuperAdmin => (_ctx?.isSuperAdmin ?? false);
 
@@ -346,10 +327,20 @@ class _StaffAdminPageState extends State<StaffAdminPage> {
               primaryActions: [
                 FilledButton.icon(
                   onPressed: () async {
-                    final ok = await Navigator.of(context).push<bool>(
+                    final result = await Navigator.of(context).push<dynamic>(
                       MaterialPageRoute(builder: (_) => const _CreateStaffAdminPage()),
                     );
-                    if (ok == true) await _refresh();
+                    if (!mounted) return;
+                    final created = result == true || (result is Map && result['ok'] == true);
+                    if (created) {
+                      final message = result is Map ? (result['message'] ?? '').toString().trim() : '';
+                      if (message.isNotEmpty) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text(message)),
+                        );
+                      }
+                      await _refresh();
+                    }
                   },
                   icon: const Icon(Icons.person_add_alt_1),
                   label: const Text('Add staff'),
@@ -795,6 +786,7 @@ class _CreateStaffAdminPageState extends State<_CreateStaffAdminPage> {
 
   final _formKey = GlobalKey<FormState>();
   bool _busy = false;
+  bool _showPw = false;
 
   final _sadminId = TextEditingController();
   final _name = TextEditingController();
@@ -802,6 +794,8 @@ class _CreateStaffAdminPageState extends State<_CreateStaffAdminPage> {
   final _password = TextEditingController();
   final _salary = TextEditingController();
   String _status = 'Active';
+
+  String _s(dynamic v) => v == null ? '' : v.toString();
 
   @override
   void dispose() {
@@ -811,6 +805,219 @@ class _CreateStaffAdminPageState extends State<_CreateStaffAdminPage> {
     _password.dispose();
     _salary.dispose();
     super.dispose();
+  }
+
+  bool _isJwtValidationIssue(Object error) {
+    final message = error.toString().toLowerCase();
+    return message.contains('invalid jwt') ||
+        message.contains('missing authorization header') ||
+        message.contains('functionexception(status: 401') ||
+        message.contains('status: 401');
+  }
+
+  bool _isDuplicateKey(Object error) {
+    final message = error.toString().toLowerCase();
+    return message.contains('duplicate key') || message.contains('23505');
+  }
+
+  List<Map<String, String>> _functionHeaderVariants(String accessToken) {
+    return [
+      const <String, String>{},
+      <String, String>{'Authorization': 'Bearer $accessToken'},
+      <String, String>{'x-user-jwt': accessToken},
+      <String, String>{
+        'Authorization': 'Bearer $accessToken',
+        'x-user-jwt': accessToken,
+      },
+    ];
+  }
+
+  Future<dynamic> _invokeCreateSadminFunction(
+    Map<String, dynamic> payload,
+    String accessToken,
+  ) async {
+    Object? lastError;
+
+    for (final name in const ['create_sadmin', 'create-sadmin']) {
+      for (final headers in _functionHeaderVariants(accessToken)) {
+        try {
+          final res = await _supa.functions.invoke(
+            name,
+            headers: headers.isEmpty ? null : headers,
+            body: payload,
+          );
+          return res.data;
+        } on FunctionException catch (e) {
+          final lower = '${e.details ?? ''} ${e.reasonPhrase ?? ''}'.toLowerCase();
+          if (e.status == 404 || lower.contains('not found')) {
+            break;
+          }
+          lastError = e;
+          if (_isJwtValidationIssue(e)) {
+            continue;
+          }
+          rethrow;
+        } catch (e) {
+          lastError = e;
+          if (_isJwtValidationIssue(e)) {
+            continue;
+          }
+          rethrow;
+        }
+      }
+    }
+
+    if (lastError != null) {
+      throw Exception(lastError.toString());
+    }
+    throw Exception('create_sadmin Edge Function was not found.');
+  }
+
+  Future<String> _generateSadminId() async {
+    try {
+      final row = await _supa
+          .from('staff_admin')
+          .select('sadmin_id')
+          .order('sadmin_id', ascending: false)
+          .limit(1)
+          .maybeSingle();
+      final lastId = _s(row?['sadmin_id']).trim();
+      final match = RegExp(r'^([A-Za-z]+)(\d+)$').firstMatch(lastId);
+      if (match != null) {
+        final prefix = match.group(1) ?? 'S';
+        final next = (int.tryParse(match.group(2) ?? '') ?? 0) + 1;
+        final digits = next.toString();
+        return '$prefix${digits.length < 3 ? digits.padLeft(3, '0') : digits}';
+      }
+    } catch (_) {
+      // ignore and fall back below
+    }
+    final ts = DateTime.now().millisecondsSinceEpoch.toString();
+    return 'S${ts.substring(ts.length - 6)}';
+  }
+
+
+  Future<Map<String, dynamic>> _createDirect() async {
+    final normalizedEmail = _email.text.trim().toLowerCase();
+    final temp = SupabaseClient(
+      SupabaseConfig.supabaseUrl,
+      SupabaseConfig.supabaseAnonKey,
+      authOptions: AuthClientOptions(
+        authFlowType: AuthFlowType.pkce,
+        pkceAsyncStorage: SharedPreferencesGotrueAsyncStorage(),
+      ),
+    );
+
+    try {
+      final existing = await _supa
+          .from('staff_admin')
+          .select('sadmin_id')
+          .eq('sadmin_email', normalizedEmail)
+          .limit(1)
+          .maybeSingle();
+      if (existing != null) {
+        final existingId = _s(existing['sadmin_id']).trim();
+        throw Exception(
+          existingId.isEmpty
+              ? 'This staff email already exists.'
+              : 'This staff email already exists: $existingId',
+        );
+      }
+    } catch (e) {
+      final msg = e.toString();
+      if (msg.contains('already exists')) rethrow;
+    }
+
+    AuthResponse auth;
+    try {
+      auth = await temp.auth.signUp(
+        email: normalizedEmail,
+        password: _password.text,
+      );
+    } on AuthException catch (e) {
+      final msg = e.message.toLowerCase();
+      if (msg.contains('already registered') || msg.contains('user already') || msg.contains('exists')) {
+        throw Exception('This staff email is already registered in Supabase Auth.');
+      }
+      rethrow;
+    }
+
+    var authUid = auth.user?.id?.trim() ?? '';
+    if (authUid.isEmpty) {
+      authUid = temp.auth.currentUser?.id?.trim() ?? '';
+    }
+    if (authUid.isEmpty) {
+      try {
+        final signIn = await temp.auth.signInWithPassword(
+          email: normalizedEmail,
+          password: _password.text,
+        );
+        authUid = signIn.user?.id?.trim() ?? temp.auth.currentUser?.id?.trim() ?? '';
+      } catch (_) {}
+    }
+    if (authUid.isEmpty) {
+      try {
+        await temp.auth.signOut();
+      } catch (_) {}
+      throw Exception('Sign up succeeded but no auth uid was returned.');
+    }
+
+    final hasAuthenticatedSession = temp.auth.currentSession != null;
+    if (!hasAuthenticatedSession) {
+      try {
+        await temp.auth.signOut();
+      } catch (_) {}
+      throw Exception(
+        'The staff Auth account was created, but Supabase did not return a login session for that new account. '
+        'Direct insert cannot continue. Please use the create_sadmin Edge Function, or turn off Confirm email for this staff creation flow.',
+      );
+    }
+
+    final salaryText = _salary.text.trim();
+    final payload = <String, dynamic>{
+      'sadmin_id': _sadminId.text.trim().isEmpty ? await _generateSadminId() : _sadminId.text.trim(),
+      'auth_uid': authUid,
+      'sadmin_name': _name.text.trim(),
+      'sadmin_email': normalizedEmail,
+      'sadmin_salary': salaryText.isEmpty ? null : num.tryParse(salaryText),
+      'sadmin_status': _status,
+    };
+
+    Object? lastError;
+    for (var attempt = 0; attempt < 8; attempt++) {
+      try {
+        await temp.from('staff_admin').insert(payload);
+        try {
+          await temp.auth.signOut();
+        } catch (_) {}
+        return {
+          'ok': true,
+          'sadmin_id': payload['sadmin_id'],
+          'auth_uid': authUid,
+          'fallback': true,
+        };
+      } catch (e) {
+        lastError = e;
+        if (_isDuplicateKey(e) && _sadminId.text.trim().isEmpty) {
+          payload['sadmin_id'] = await _generateSadminId();
+          await Future<void>.delayed(Duration(milliseconds: 120 * (attempt + 1)));
+          continue;
+        }
+        final lower = e.toString().toLowerCase();
+        if (lower.contains('row-level security') || lower.contains('42501')) {
+          throw Exception(
+            'Direct fallback could create the Auth account, but staff_admin insert is blocked by RLS. '
+            'Please allow self-insert on staff_admin for auth_uid = auth.uid(), or fix the create_sadmin Edge Function JWT config.',
+          );
+        }
+        rethrow;
+      }
+    }
+
+    try {
+      await temp.auth.signOut();
+    } catch (_) {}
+    throw Exception(lastError?.toString() ?? 'Failed to create staff_admin after multiple retries.');
   }
 
   Future<void> _create() async {
@@ -827,26 +1034,27 @@ class _CreateStaffAdminPageState extends State<_CreateStaffAdminPage> {
       final payload = {
         'sadmin_id': _sadminId.text.trim().isEmpty ? null : _sadminId.text.trim(),
         'sadmin_name': _name.text.trim(),
-        'sadmin_email': _email.text.trim(),
+        'sadmin_email': _email.text.trim().toLowerCase(),
         'sadmin_password': _password.text,
         'sadmin_salary': _salary.text.trim().isEmpty ? null : num.tryParse(_salary.text.trim()),
         'sadmin_status': _status,
       };
 
-      final res = await _supa.functions.invoke(
-        'create_sadmin',
-        headers: {
-          'Authorization': 'Bearer ${session.accessToken}',
-          'x-user-jwt': session.accessToken,
-        },
-        body: payload,
-      );
+      dynamic responseData;
+      try {
+        responseData = await _invokeCreateSadminFunction(payload, session.accessToken);
+      } catch (e) {
+        if (!_isJwtValidationIssue(e)) rethrow;
+        final direct = await _createDirect();
+        responseData = direct['sadmin_id'] ?? direct;
+      }
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Created: ${res.data ?? 'OK'}')),
-      );
-      Navigator.of(context).pop(true);
+      final message = 'Created: ${responseData ?? 'OK'}';
+      Navigator.of(context).pop(<String, dynamic>{
+        'ok': true,
+        'message': message,
+      });
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -868,7 +1076,8 @@ class _CreateStaffAdminPageState extends State<_CreateStaffAdminPage> {
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
             children: [
               Text(
-                'This will create a staff admin Auth user (email+password) and a staff_admin row.\n\nYou must deploy the Edge Function `create_sadmin` first.',
+                'This will create a staff admin Auth user (email+password) and a staff_admin row.\n\n'
+                'The app will try the Edge Function `create_sadmin` first, and fall back to direct signup if the function is blocked by Invalid JWT.',
                 style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
               ),
               const SizedBox(height: 12),
@@ -878,41 +1087,52 @@ class _CreateStaffAdminPageState extends State<_CreateStaffAdminPage> {
                   labelText: 'SAdmin ID (optional)',
                   hintText: 'S001 (leave empty for auto)',
                 ),
+                validator: (v) {
+                  final value = (v ?? '').trim();
+                  if (value.isEmpty) return null;
+                  if (!RegExp(r'^[A-Za-z][A-Za-z0-9_-]{1,19}$').hasMatch(value)) {
+                    return 'Use 2 to 20 letters, numbers, _ or -';
+                  }
+                  return null;
+                },
               ),
               const SizedBox(height: 10),
               TextFormField(
                 controller: _name,
                 decoration: const InputDecoration(labelText: 'SAdmin Name'),
-                validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null,
+                validator: (v) => MyValidators.personName(v, fieldName: 'SAdmin name'),
               ),
               const SizedBox(height: 10),
               TextFormField(
                 controller: _email,
-                decoration: const InputDecoration(labelText: 'SAdmin Email (Gmail)') ,
+                decoration: const InputDecoration(labelText: 'SAdmin Email'),
                 keyboardType: TextInputType.emailAddress,
-                validator: (v) {
-                  final t = (v ?? '').trim();
-                  if (t.isEmpty) return 'Required';
-                  if (!t.contains('@')) return 'Invalid email';
-                  return null;
-                },
+                validator: (v) => MyValidators.email(v),
               ),
               const SizedBox(height: 10),
               TextFormField(
                 controller: _password,
-                decoration: const InputDecoration(labelText: 'Password'),
-                obscureText: true,
-                validator: (v) {
-                  final t = (v ?? '');
-                  if (t.length < 8) return 'Min 8 characters';
-                  return null;
-                },
+                decoration: InputDecoration(
+                  labelText: 'Password',
+                  suffixIcon: IconButton(
+                    icon: Icon(_showPw ? Icons.visibility_off : Icons.visibility),
+                    onPressed: _busy ? null : () => setState(() => _showPw = !_showPw),
+                  ),
+                ),
+                obscureText: !_showPw,
+                validator: (v) => MyValidators.password(v),
               ),
               const SizedBox(height: 10),
               TextFormField(
                 controller: _salary,
                 decoration: const InputDecoration(labelText: 'Salary (optional)'),
                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                validator: (v) => MyValidators.numericText(
+                  v,
+                  required: false,
+                  fieldName: 'Salary',
+                  min: 0,
+                ),
               ),
               const SizedBox(height: 10),
               DropdownButtonFormField<String>(
@@ -922,7 +1142,7 @@ class _CreateStaffAdminPageState extends State<_CreateStaffAdminPage> {
                   DropdownMenuItem(value: 'Active', child: Text('Active')),
                   DropdownMenuItem(value: 'Inactive', child: Text('Inactive')),
                 ],
-                onChanged: (v) => setState(() => _status = v ?? 'Active'),
+                onChanged: _busy ? null : (v) => setState(() => _status = v ?? 'Active'),
               ),
               const SizedBox(height: 18),
               FilledButton.icon(

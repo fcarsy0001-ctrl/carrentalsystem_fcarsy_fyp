@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:email_validator/email_validator.dart';
 import '../main.dart';
@@ -375,6 +376,26 @@ class _RegisterPageState extends State<RegisterPage> {
     }
   }
 
+  void _showTermsAndConditions() {
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Terms and Conditions'),
+        content: const SingleChildScrollView(
+          child: Text(
+            'By creating an account, you agree to provide accurate information, keep your account secure, comply with platform rules, and use the car rental services responsibly. The company may suspend accounts that violate the rules or provide false information.',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<String> _generateUserId() async {
     try {
       // Get the highest user_id from existing users
@@ -506,14 +527,25 @@ class _RegisterPageState extends State<RegisterPage> {
                 // Full Name
                 TextFormField(
                   controller: _nameController,
+                  inputFormatters: [
+                    LengthLimitingTextInputFormatter(100),
+                    FilteringTextInputFormatter.deny(RegExp(r'\d')),
+                  ],
                   decoration: const InputDecoration(
                     labelText: 'Full Name',
                     hintText: 'Enter your full name',
                     prefixIcon: Icon(Icons.person_outlined),
                   ),
                   validator: (value) {
-                    if (value == null || value.isEmpty) {
+                    final name = value?.trim() ?? '';
+                    if (name.isEmpty) {
                       return 'Please enter your name';
+                    }
+                    if (RegExp(r'\d').hasMatch(name)) {
+                      return 'Full name cannot contain digits';
+                    }
+                    if (name.length > 100) {
+                      return 'Full name cannot be more than 100 characters';
                     }
                     return null;
                   },
@@ -596,30 +628,33 @@ class _RegisterPageState extends State<RegisterPage> {
                     // Phone Number Input
                     Expanded(
                       child: TextFormField(
-                  controller: _phoneController,
-                  keyboardType: TextInputType.phone,
-                  decoration: const InputDecoration(
-                    labelText: 'Phone Number',
+                        controller: _phoneController,
+                        keyboardType: TextInputType.phone,
+                        inputFormatters: [
+                          FilteringTextInputFormatter.digitsOnly,
+                          LengthLimitingTextInputFormatter(18),
+                        ],
+                        decoration: const InputDecoration(
+                          labelText: 'Phone Number',
                           hintText: 'Enter phone number',
-                    prefixIcon: Icon(Icons.phone_outlined),
-                  ),
-                  validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return 'Please enter your phone number';
-                    }
-                          // Remove spaces and dashes for validation
-                          final cleanedValue = value.replaceAll(RegExp(r'[\s-]'), '');
+                          prefixIcon: Icon(Icons.phone_outlined),
+                        ),
+                        validator: (value) {
+                          final cleanedValue = value?.trim() ?? '';
+                          if (cleanedValue.isEmpty) {
+                            return 'Please enter your phone number';
+                          }
                           if (!RegExp(r'^\d+$').hasMatch(cleanedValue)) {
                             return 'Phone number must contain only digits';
                           }
                           if (cleanedValue.length < 7) {
                             return 'Phone number is too short';
                           }
-                          if (cleanedValue.length > 15) {
-                            return 'Phone number is too long';
-                    }
-                    return null;
-                  },
+                          if (cleanedValue.length > 18) {
+                            return 'Phone number cannot be more than 18 digits';
+                          }
+                          return null;
+                        },
                       ),
                     ),
                   ],
@@ -807,18 +842,35 @@ class _RegisterPageState extends State<RegisterPage> {
                       onChanged: _isLoading
                           ? null
                           : (value) {
-                        setState(() {
-                          _agreeToTerms = value ?? false;
-                        });
-                      },
+                              setState(() {
+                                _agreeToTerms = value ?? false;
+                              });
+                            },
                     ),
                     Expanded(
-                      child: Text(
-                        'I agree to the Terms and Conditions',
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: Colors.grey[700],
-                        ),
+                      child: Wrap(
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          Text(
+                            'I agree to the ',
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: Colors.grey[700],
+                            ),
+                          ),
+                          InkWell(
+                            onTap: _showTermsAndConditions,
+                            child: Text(
+                              'Terms and Conditions',
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: Theme.of(context).colorScheme.primary,
+                                fontWeight: FontWeight.w700,
+                                decoration: TextDecoration.underline,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ],
