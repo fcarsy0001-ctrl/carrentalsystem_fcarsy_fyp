@@ -188,6 +188,19 @@ class AdminUserService {
     return data;
   }
 
+  Future<Map<String, dynamic>?> _findUserByEmail(String email) async {
+    final normalized = email.trim().toLowerCase();
+    final row = await _client
+        .from('app_user')
+        .select(
+          'user_id,auth_uid,user_name,user_email,user_phone,user_icno,user_gender,user_role,user_status,email_verified,driver_license_status',
+        )
+        .eq('user_email', normalized)
+        .maybeSingle();
+    if (row == null) return null;
+    return Map<String, dynamic>.from(row as Map);
+  }
+
   Future<String> _generateUserId() async {
     try {
       final response = await _client
@@ -222,10 +235,11 @@ class AdminUserService {
     }
   }
 
-  Future<String> _createAuthUserViaHttp({
+  Future<Map<String, String>> _createAuthUserViaHttp({
     required String email,
     required String password,
   }) async {
+    final normalizedEmail = email.trim().toLowerCase();
     final response = await http.post(
       Uri.parse('${SupabaseConfig.supabaseUrl}/auth/v1/signup'),
       headers: {
@@ -234,7 +248,7 @@ class AdminUserService {
         'Content-Type': 'application/json',
       },
       body: jsonEncode({
-        'email': email.trim().toLowerCase(),
+        'email': normalizedEmail,
         'password': password,
       }),
     );
@@ -256,13 +270,62 @@ class AdminUserService {
     }
     final map = Map<String, dynamic>.from(data);
     final user = map['user'];
+    final session = map['session'];
+    var authUid = '';
     if (user is Map && user['id'] != null) {
-      return user['id'].toString();
+      authUid = user['id'].toString();
     }
-    throw Exception('Auth signup failed: user ID not returned.');
+    if (authUid.isEmpty) {
+      throw Exception('Auth signup failed: user ID not returned.');
+    }
+
+    var accessToken = '';
+    if (session is Map && session['access_token'] != null) {
+      accessToken = session['access_token'].toString();
+    }
+
+    if (accessToken.isEmpty) {
+      final signInResp = await http.post(
+        Uri.parse('${SupabaseConfig.supabaseUrl}/auth/v1/token?grant_type=password'),
+        headers: {
+          'apikey': SupabaseConfig.supabaseAnonKey,
+          'Authorization': 'Bearer ${SupabaseConfig.supabaseAnonKey}',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({
+          'email': normalizedEmail,
+          'password': password,
+        }),
+      );
+      final signInText = signInResp.body;
+      dynamic signInData;
+      if (signInText.isNotEmpty) {
+        try {
+          signInData = jsonDecode(signInText);
+        } catch (_) {
+          signInData = signInText;
+        }
+      }
+      if (signInResp.statusCode >= 400) {
+        throw Exception('Auth sign-in HTTP ${signInResp.statusCode}: ${signInData ?? signInText}');
+      }
+      if (signInData is Map && signInData['access_token'] != null) {
+        accessToken = signInData['access_token'].toString();
+      }
+    }
+
+    if (accessToken.isEmpty) {
+      throw Exception('Auth signup failed: access token not returned.');
+    }
+
+    return {
+      'auth_uid': authUid,
+      'access_token': accessToken,
+    };
   }
 
   Future<Map<String, dynamic>> _insertAppUserDirect({
+    String? accessToken,
     SupabaseClient? client,
     required String authUid,
     required String name,
@@ -274,7 +337,8 @@ class AdminUserService {
     required String status,
     required bool emailVerified,
   }) async {
-    final insertClient = client ?? _client;
+    final normalizedEmail = email.trim().toLowerCase();
+    final insertClient = accessToken == null ? (client ?? _client) : null;
     int retries = 0;
     while (retries < 10) {
       final userId = await _generateUserId();
@@ -282,7 +346,7 @@ class AdminUserService {
         'user_id': userId,
         'auth_uid': authUid,
         'user_name': name,
-        'user_email': email.trim().toLowerCase(),
+        'user_email': normalizedEmail,
         'user_password': '***',
         'user_phone': phone,
         'user_icno': icNo,
@@ -293,7 +357,24 @@ class AdminUserService {
         'driver_license_status': 'Not Submitted',
       };
       try {
-        await insertClient.from('app_user').insert(payload);
+        if (accessToken != null) {
+          final response = await http.post(
+            Uri.parse('${SupabaseConfig.supabaseUrl}/rest/v1/app_user'),
+            headers: {
+              'apikey': SupabaseConfig.supabaseAnonKey,
+              'Authorization': 'Bearer $accessToken',
+              'Content-Type': 'application/json',
+              'Prefer': 'return=representation',
+            },
+            body: jsonEncode(payload),
+          );
+          final text = response.body;
+          if (response.statusCode >= 400) {
+            throw Exception('app_user insert HTTP ${response.statusCode}: $text');
+          }
+        } else {
+          await insertClient!.from('app_user').insert(payload);
+        }
         return payload;
       } catch (e) {
         final lower = e.toString().toLowerCase();
@@ -311,7 +392,7 @@ class AdminUserService {
       'user_id': fallbackId,
       'auth_uid': authUid,
       'user_name': name,
-      'user_email': email.trim().toLowerCase(),
+      'user_email': normalizedEmail,
       'user_password': '***',
       'user_phone': phone,
       'user_icno': icNo,
@@ -321,7 +402,23 @@ class AdminUserService {
       'email_verified': emailVerified,
       'driver_license_status': 'Not Submitted',
     };
-    await insertClient.from('app_user').insert(payload);
+    if (accessToken != null) {
+      final response = await http.post(
+        Uri.parse('${SupabaseConfig.supabaseUrl}/rest/v1/app_user'),
+        headers: {
+          'apikey': SupabaseConfig.supabaseAnonKey,
+          'Authorization': 'Bearer $accessToken',
+          'Content-Type': 'application/json',
+          'Prefer': 'return=representation',
+        },
+        body: jsonEncode(payload),
+      );
+      if (response.statusCode >= 400) {
+        throw Exception('app_user insert HTTP ${response.statusCode}: ${response.body}');
+      }
+    } else {
+      await insertClient!.from('app_user').insert(payload);
+    }
     return payload;
   }
 
@@ -336,71 +433,22 @@ class AdminUserService {
     required String status,
     required bool emailVerified,
   }) async {
-    final adminSession = _client.auth.currentSession;
-    final adminSessionJson = adminSession == null ? null : jsonEncode(adminSession.toJson());
-    final temp = SupabaseClient(
-      SupabaseConfig.supabaseUrl,
-      SupabaseConfig.supabaseAnonKey,
-      authOptions: const FlutterAuthClientOptions(
-        autoRefreshToken: false,
-        authFlowType: AuthFlowType.implicit,
-        localStorage: EmptyLocalStorage(),
-        detectSessionInUri: false,
-      ),
+    final auth = await _createAuthUserViaHttp(
+      email: email,
+      password: password,
     );
-    try {
-      AuthResponse? authResponse;
-      try {
-        authResponse = await temp.auth.signUp(
-          email: email.trim().toLowerCase(),
-          password: password,
-        );
-      } catch (e) {
-        final lower = e.toString().toLowerCase();
-        if (lower.contains('error sending confirmation email') ||
-            lower.contains('unexpected_failure')) {
-          final signIn = await temp.auth.signInWithPassword(
-            email: email.trim().toLowerCase(),
-            password: password,
-          );
-          authResponse = AuthResponse(user: signIn.user, session: signIn.session);
-        } else {
-          rethrow;
-        }
-      }
-
-      var authUid = authResponse?.user?.id ?? '';
-      if (authUid.isEmpty) {
-        final signIn = await temp.auth.signInWithPassword(
-          email: email.trim().toLowerCase(),
-          password: password,
-        );
-        authUid = signIn.user?.id ?? '';
-      }
-
-      if (authUid.isEmpty) {
-        throw Exception('Auth signup failed: user ID not returned.');
-      }
-
-      return _insertAppUserDirect(
-        client: temp,
-        authUid: authUid,
-        name: name,
-        email: email,
-        phone: phone,
-        icNo: icNo,
-        gender: gender,
-        role: role,
-        status: status,
-        emailVerified: emailVerified,
-      );
-    } finally {
-      if (adminSessionJson != null) {
-        try {
-          await _client.auth.recoverSession(adminSessionJson);
-        } catch (_) {}
-      }
-    }
+    return _insertAppUserDirect(
+      accessToken: auth['access_token'],
+      authUid: auth['auth_uid'] ?? '',
+      name: name,
+      email: email,
+      phone: phone,
+      icNo: icNo,
+      gender: gender,
+      role: role,
+      status: status,
+      emailVerified: emailVerified,
+    );
   }
 
   Future<Map<String, dynamic>> createUser({
@@ -414,10 +462,19 @@ class AdminUserService {
     String status = 'Active',
     bool emailVerified = true,
   }) async {
+    final normalizedEmail = email.trim().toLowerCase();
+    final existing = await _findUserByEmail(normalizedEmail);
+    if (existing != null) {
+      return {
+        ...existing,
+        '_existing': true,
+      };
+    }
+
     final token = await _requireToken();
     final body = {
       'user_name': name,
-      'user_email': email,
+      'user_email': normalizedEmail,
       'user_password': password,
       'user_phone': phone,
       'user_icno': icNo,

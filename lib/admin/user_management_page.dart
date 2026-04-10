@@ -522,8 +522,15 @@ class _CreateUserPageState extends State<_CreateUserPage> {
         // ignore best-effort fetch
       }
 
+      final alreadyExists = res['_existing'] == true;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(createdId.isEmpty ? 'User created' : 'User created: $createdId')),
+        SnackBar(
+          content: Text(
+            alreadyExists
+                ? (createdId.isEmpty ? 'User already exists' : 'User already exists: $createdId')
+                : (createdId.isEmpty ? 'User created' : 'User created: $createdId'),
+          ),
+        ),
       );
       Navigator.pop(context, createdRow ?? {
         'user_id': createdId,
