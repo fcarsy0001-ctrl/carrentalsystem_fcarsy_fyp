@@ -48,18 +48,14 @@ class _LeaserReviewPageState extends State<LeaserReviewPage> {
   String _s(dynamic v) => v == null ? '' : v.toString();
 
   Future<List<Map<String, dynamic>>> _load() async {
+    final base = _supa.from('leaser').select('*');
+    final q = (_filter == 'All') ? base : base.eq('leaser_status', _filter);
     try {
-      final base = _supa.from('leaser').select('*');
-      final q = (_filter == 'All') ? base : base.eq('leaser_status', _filter);
-      try {
-        final rows = await q.order('submitted_at', ascending: false);
-        return (rows as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();
-      } catch (_) {
-        final rows = await q.order('leaser_id', ascending: false);
-        return (rows as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();
-      }
-    } catch (e) {
-      rethrow;
+      final rows = await q.order('submitted_at', ascending: false);
+      return (rows as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    } catch (_) {
+      final rows = await q.order('leaser_id', ascending: false);
+      return (rows as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();
     }
   }
 
@@ -73,13 +69,6 @@ class _LeaserReviewPageState extends State<LeaserReviewPage> {
       MaterialPageRoute(builder: (_) => LeaserReviewDetailPage(row: row)),
     );
     if (ok == true) await _refresh();
-  }
-
-  Color _statusColor(String st) {
-    final v = st.trim().toLowerCase();
-    if (v == 'approved') return Colors.green;
-    if (v == 'rejected') return Colors.red;
-    return Colors.orange;
   }
 
   Future<void> _openAdd() async {
@@ -139,56 +128,56 @@ class _LeaserReviewPageState extends State<LeaserReviewPage> {
           child: FutureBuilder<List<Map<String, dynamic>>>(
             future: _future,
             builder: (context, snap) {
-                if (snap.connectionState != ConnectionState.done) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                if (snap.hasError) {
-                  return Center(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Text('Failed to load: ${snap.error}'),
-                    ),
-                  );
-                }
-                final rows = snap.data ?? const [];
-                if (rows.isEmpty) {
-                  return const Center(child: Text('No leaser applications'));
-                }
-                return RefreshIndicator(
-                  onRefresh: _refresh,
-                  child: ListView.separated(
-                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-                    itemCount: rows.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 10),
-                    itemBuilder: (context, i) {
-                      final r = rows[i];
-                      final id = _s(r['leaser_id']);
-                      final type = _s(r['leaser_type']);
-                      final name = _s(r['leaser_name']);
-                      final company = _s(r['company_name']);
-                      final st = _s(r['leaser_status']);
-                      final sub = type.toLowerCase() == 'company' && company.isNotEmpty
-                          ? '$company • $name'
-                          : name;
-                      return AdminCard(
-                        child: ListTile(
-                          onTap: () => _openDetail(r),
-                          leading: const Icon(Icons.storefront_outlined),
-                          title: Text(
-                            id.isEmpty ? '(no id)' : id,
-                            style: const TextStyle(fontWeight: FontWeight.w900),
-                          ),
-                          subtitle: Text(
-                            '${sub.isEmpty ? '-' : sub}\n${type.isEmpty ? '-' : type}',
-                          ),
-                          isThreeLine: true,
-                          trailing: AdminStatusChip(status: st.isEmpty ? 'Pending' : st),
-                        ),
-                      );
-                    },
+              if (snap.connectionState != ConnectionState.done) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              if (snap.hasError) {
+                return Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Text('Failed to load: ${snap.error}'),
                   ),
                 );
-              },
+              }
+              final rows = snap.data ?? const [];
+              if (rows.isEmpty) {
+                return const Center(child: Text('No leaser applications'));
+              }
+              return RefreshIndicator(
+                onRefresh: _refresh,
+                child: ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                  itemCount: rows.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 10),
+                  itemBuilder: (context, i) {
+                    final r = rows[i];
+                    final id = _s(r['leaser_id']);
+                    final type = _s(r['leaser_type']);
+                    final name = _s(r['leaser_name']);
+                    final company = _s(r['company_name']);
+                    final st = _s(r['leaser_status']);
+                    final sub = type.toLowerCase() == 'company' && company.isNotEmpty
+                        ? '$company - $name'
+                        : name;
+                    return AdminCard(
+                      child: ListTile(
+                        onTap: () => _openDetail(r),
+                        leading: const Icon(Icons.storefront_outlined),
+                        title: Text(
+                          id.isEmpty ? '(no id)' : id,
+                          style: const TextStyle(fontWeight: FontWeight.w900),
+                        ),
+                        subtitle: Text(
+                          '${sub.isEmpty ? '-' : sub}\n${type.isEmpty ? '-' : type}',
+                        ),
+                        isThreeLine: true,
+                        trailing: AdminStatusChip(status: st.isEmpty ? 'Pending' : st),
+                      ),
+                    );
+                  },
+                ),
+              );
+            },
           ),
         ),
       ],
@@ -238,27 +227,119 @@ class _LeaserAddPageState extends State<_LeaserAddPage> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg), backgroundColor: bg));
   }
 
+  String _nextFallbackUserId(int offset) {
+    final seed = (DateTime.now().microsecondsSinceEpoch + offset).remainder(100000);
+    return 'U${seed.toString().padLeft(5, '0')}';
+  }
+
+  Future<String> _generateUserId() async {
+    try {
+      final row = await _supa
+          .from('app_user')
+          .select('user_id')
+          .order('user_id', ascending: false)
+          .limit(1)
+          .maybeSingle();
+      final last = (row?['user_id'] ?? '').toString().trim();
+      final match = RegExp(r'^U(\d+)$').firstMatch(last);
+      if (match != null) {
+        final next = (int.tryParse(match.group(1) ?? '') ?? 0) + 1;
+        final digits = next.toString();
+        return 'U${digits.length < 3 ? digits.padLeft(3, '0') : digits}';
+      }
+    } catch (_) {
+      // ignore
+    }
+    return _nextFallbackUserId(0);
+  }
+
+  Future<Map<String, dynamic>?> _findLeaserByEmail(String email) async {
+    try {
+      final row = await _supa
+          .from('leaser')
+          .select('leaser_id,user_id,email')
+          .eq('email', email)
+          .limit(1)
+          .maybeSingle();
+      if (row != null) return Map<String, dynamic>.from(row as Map);
+    } catch (_) {
+      // ignore
+    }
+    return null;
+  }
+
+  Future<String> _findExistingUserIdByEmail(String email) async {
+    try {
+      final row = await _supa
+          .from('app_user')
+          .select('user_id')
+          .eq('user_email', email)
+          .limit(1)
+          .maybeSingle();
+      return (row?['user_id'] ?? '').toString().trim();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Future<String> _tryCreateLinkedAppUser(String email) async {
+    final derivedStatus = _status == 'Approved' ? 'Active' : 'Inactive';
+
+    for (var attempt = 0; attempt < 10; attempt++) {
+      final userId = attempt == 0 ? await _generateUserId() : _nextFallbackUserId(attempt + 1);
+      try {
+        await _supa.from('app_user').insert({
+          'user_id': userId,
+          'user_name': _name.text.trim(),
+          'user_email': email,
+          'user_password': '***',
+          'user_phone': _phone.text.trim(),
+          'user_icno': _ic.text.trim(),
+          'user_gender': 'Other',
+          'user_role': 'Leaser',
+          'user_status': derivedStatus,
+          'email_verified': false,
+        });
+        return userId;
+      } catch (e) {
+        final lower = e.toString().toLowerCase();
+        if (lower.contains('duplicate') || lower.contains('23505')) {
+          continue;
+        }
+        return '';
+      }
+    }
+    return '';
+  }
+
   Future<void> _save() async {
     if (_busy) return;
     if (!_formKey.currentState!.validate()) return;
     setState(() => _busy = true);
     try {
       final email = _email.text.trim().toLowerCase();
-      final u = await _supa.from('app_user').select('user_id').eq('user_email', email).limit(1).maybeSingle();
-      final userId = (u?['user_id'] ?? '').toString().trim();
-      if (userId.isEmpty) {
-        throw Exception('No app_user found for this email');
+
+      final existingByEmail = await _findLeaserByEmail(email);
+      if (existingByEmail != null) {
+        throw Exception('This email already has a leaser record');
       }
 
-      final existing = await widget.service.getByUserId(userId);
-      if (existing != null) {
-        throw Exception('This user already has a leaser record');
+      var userId = await _findExistingUserIdByEmail(email);
+      if (userId.isEmpty) {
+        userId = await _tryCreateLinkedAppUser(email);
+      }
+
+      if (userId.isNotEmpty) {
+        final existing = await widget.service.getByUserId(userId);
+        if (existing != null) {
+          throw Exception('This user already has a leaser record');
+        }
       }
 
       final leaserId = await widget.service.generateLeaserId();
       await _supa.from('leaser').insert({
         'leaser_id': leaserId,
-        'user_id': userId,
+        'user_id': userId.isEmpty ? null : userId,
         'leaser_type': _type.text.trim(),
         'leaser_name': _name.text.trim(),
         'company_name': _company.text.trim().isEmpty ? null : _company.text.trim(),
@@ -294,7 +375,7 @@ class _LeaserAddPageState extends State<_LeaserAddPage> {
             children: [
               TextFormField(
                 controller: _email,
-                decoration: const InputDecoration(labelText: 'Email (must exist in app_user)'),
+                decoration: const InputDecoration(labelText: 'Email'),
                 keyboardType: TextInputType.emailAddress,
                 validator: (v) {
                   final s = (v ?? '').trim();

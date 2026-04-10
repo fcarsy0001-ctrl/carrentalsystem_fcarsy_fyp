@@ -1,9 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-import '../services/admin_user_service.dart';
 import '../services/leaser_application_service.dart';
-import '../utils/my_validators.dart';
 import 'leaser_review_detail_page.dart';
 import 'widgets/admin_ui.dart';
 
@@ -50,18 +48,14 @@ class _LeaserReviewPageState extends State<LeaserReviewPage> {
   String _s(dynamic v) => v == null ? '' : v.toString();
 
   Future<List<Map<String, dynamic>>> _load() async {
+    final base = _supa.from('leaser').select('*');
+    final q = (_filter == 'All') ? base : base.eq('leaser_status', _filter);
     try {
-      final base = _supa.from('leaser').select('*');
-      final q = (_filter == 'All') ? base : base.eq('leaser_status', _filter);
-      try {
-        final rows = await q.order('submitted_at', ascending: false);
-        return (rows as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();
-      } catch (_) {
-        final rows = await q.order('leaser_id', ascending: false);
-        return (rows as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();
-      }
-    } catch (e) {
-      rethrow;
+      final rows = await q.order('submitted_at', ascending: false);
+      return (rows as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    } catch (_) {
+      final rows = await q.order('leaser_id', ascending: false);
+      return (rows as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();
     }
   }
 
@@ -75,13 +69,6 @@ class _LeaserReviewPageState extends State<LeaserReviewPage> {
       MaterialPageRoute(builder: (_) => LeaserReviewDetailPage(row: row)),
     );
     if (ok == true) await _refresh();
-  }
-
-  Color _statusColor(String st) {
-    final v = st.trim().toLowerCase();
-    if (v == 'approved') return Colors.green;
-    if (v == 'rejected') return Colors.red;
-    return Colors.orange;
   }
 
   Future<void> _openAdd() async {
@@ -141,56 +128,56 @@ class _LeaserReviewPageState extends State<LeaserReviewPage> {
           child: FutureBuilder<List<Map<String, dynamic>>>(
             future: _future,
             builder: (context, snap) {
-                if (snap.connectionState != ConnectionState.done) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                if (snap.hasError) {
-                  return Center(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Text('Failed to load: ${snap.error}'),
-                    ),
-                  );
-                }
-                final rows = snap.data ?? const [];
-                if (rows.isEmpty) {
-                  return const Center(child: Text('No leaser applications'));
-                }
-                return RefreshIndicator(
-                  onRefresh: _refresh,
-                  child: ListView.separated(
-                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-                    itemCount: rows.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 10),
-                    itemBuilder: (context, i) {
-                      final r = rows[i];
-                      final id = _s(r['leaser_id']);
-                      final type = _s(r['leaser_type']);
-                      final name = _s(r['leaser_name']);
-                      final company = _s(r['company_name']);
-                      final st = _s(r['leaser_status']);
-                      final sub = type.toLowerCase() == 'company' && company.isNotEmpty
-                          ? '$company • $name'
-                          : name;
-                      return AdminCard(
-                        child: ListTile(
-                          onTap: () => _openDetail(r),
-                          leading: const Icon(Icons.storefront_outlined),
-                          title: Text(
-                            id.isEmpty ? '(no id)' : id,
-                            style: const TextStyle(fontWeight: FontWeight.w900),
-                          ),
-                          subtitle: Text(
-                            '${sub.isEmpty ? '-' : sub}\n${type.isEmpty ? '-' : type}',
-                          ),
-                          isThreeLine: true,
-                          trailing: AdminStatusChip(status: st.isEmpty ? 'Pending' : st),
-                        ),
-                      );
-                    },
+              if (snap.connectionState != ConnectionState.done) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              if (snap.hasError) {
+                return Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Text('Failed to load: ${snap.error}'),
                   ),
                 );
-              },
+              }
+              final rows = snap.data ?? const [];
+              if (rows.isEmpty) {
+                return const Center(child: Text('No leaser applications'));
+              }
+              return RefreshIndicator(
+                onRefresh: _refresh,
+                child: ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                  itemCount: rows.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 10),
+                  itemBuilder: (context, i) {
+                    final r = rows[i];
+                    final id = _s(r['leaser_id']);
+                    final type = _s(r['leaser_type']);
+                    final name = _s(r['leaser_name']);
+                    final company = _s(r['company_name']);
+                    final st = _s(r['leaser_status']);
+                    final sub = type.toLowerCase() == 'company' && company.isNotEmpty
+                        ? '$company - $name'
+                        : name;
+                    return AdminCard(
+                      child: ListTile(
+                        onTap: () => _openDetail(r),
+                        leading: const Icon(Icons.storefront_outlined),
+                        title: Text(
+                          id.isEmpty ? '(no id)' : id,
+                          style: const TextStyle(fontWeight: FontWeight.w900),
+                        ),
+                        subtitle: Text(
+                          '${sub.isEmpty ? '-' : sub}\n${type.isEmpty ? '-' : type}',
+                        ),
+                        isThreeLine: true,
+                        trailing: AdminStatusChip(status: st.isEmpty ? 'Pending' : st),
+                      ),
+                    );
+                  },
+                ),
+              );
+            },
           ),
         ),
       ],
@@ -212,7 +199,6 @@ class _LeaserAddPageState extends State<_LeaserAddPage> {
 
   final _formKey = GlobalKey<FormState>();
   bool _busy = false;
-  bool _showPw = false;
 
   final _email = TextEditingController();
   final _type = TextEditingController(text: 'Individual');
@@ -222,11 +208,7 @@ class _LeaserAddPageState extends State<_LeaserAddPage> {
   final _phone = TextEditingController();
   final _ic = TextEditingController();
   final _ssm = TextEditingController();
-  final _password = TextEditingController();
-  final _confirmPassword = TextEditingController();
   String _status = 'Approved';
-
-  bool get _isCompany => _type.text.trim() == 'Company';
 
   @override
   void dispose() {
@@ -238,13 +220,96 @@ class _LeaserAddPageState extends State<_LeaserAddPage> {
     _phone.dispose();
     _ic.dispose();
     _ssm.dispose();
-    _password.dispose();
-    _confirmPassword.dispose();
     super.dispose();
   }
 
   void _toast(String msg, {Color? bg}) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg), backgroundColor: bg));
+  }
+
+  String _nextFallbackUserId(int offset) {
+    final seed = (DateTime.now().microsecondsSinceEpoch + offset).remainder(100000);
+    return 'U${seed.toString().padLeft(5, '0')}';
+  }
+
+  Future<String> _generateUserId() async {
+    try {
+      final row = await _supa
+          .from('app_user')
+          .select('user_id')
+          .order('user_id', ascending: false)
+          .limit(1)
+          .maybeSingle();
+      final last = (row?['user_id'] ?? '').toString().trim();
+      final match = RegExp(r'^U(\d+)$').firstMatch(last);
+      if (match != null) {
+        final next = (int.tryParse(match.group(1) ?? '') ?? 0) + 1;
+        final digits = next.toString();
+        return 'U${digits.length < 3 ? digits.padLeft(3, '0') : digits}';
+      }
+    } catch (_) {
+      // ignore
+    }
+    return _nextFallbackUserId(0);
+  }
+
+  Future<Map<String, dynamic>?> _findLeaserByEmail(String email) async {
+    try {
+      final row = await _supa
+          .from('leaser')
+          .select('leaser_id,user_id,email')
+          .eq('email', email)
+          .limit(1)
+          .maybeSingle();
+      if (row != null) return Map<String, dynamic>.from(row as Map);
+    } catch (_) {
+      // ignore
+    }
+    return null;
+  }
+
+  Future<String> _findExistingUserIdByEmail(String email) async {
+    try {
+      final row = await _supa
+          .from('app_user')
+          .select('user_id')
+          .eq('user_email', email)
+          .limit(1)
+          .maybeSingle();
+      return (row?['user_id'] ?? '').toString().trim();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Future<String> _tryCreateLinkedAppUser(String email) async {
+    final derivedStatus = _status == 'Approved' ? 'Active' : 'Inactive';
+
+    for (var attempt = 0; attempt < 10; attempt++) {
+      final userId = attempt == 0 ? await _generateUserId() : _nextFallbackUserId(attempt + 1);
+      try {
+        await _supa.from('app_user').insert({
+          'user_id': userId,
+          'user_name': _name.text.trim(),
+          'user_email': email,
+          'user_password': '***',
+          'user_phone': _phone.text.trim(),
+          'user_icno': _ic.text.trim(),
+          'user_gender': 'Other',
+          'user_role': 'Leaser',
+          'user_status': derivedStatus,
+          'email_verified': false,
+        });
+        return userId;
+      } catch (e) {
+        final lower = e.toString().toLowerCase();
+        if (lower.contains('duplicate') || lower.contains('23505')) {
+          continue;
+        }
+        return '';
+      }
+    }
+    return '';
   }
 
   Future<void> _save() async {
@@ -253,63 +318,36 @@ class _LeaserAddPageState extends State<_LeaserAddPage> {
     setState(() => _busy = true);
     try {
       final email = _email.text.trim().toLowerCase();
-      final userLookup = await _supa
-          .from('app_user')
-          .select('user_id,user_role')
-          .eq('user_email', email)
-          .limit(1)
-          .maybeSingle();
 
-      var userId = (userLookup?['user_id'] ?? '').toString().trim();
-      if (userId.isEmpty) {
-        final pwError = MyValidators.password(_password.text);
-        if (pwError != null) throw Exception('Password: $pwError');
-        final confirmError = MyValidators.confirmPassword(_confirmPassword.text, _password.text);
-        if (confirmError != null) throw Exception(confirmError);
-
-        final created = await AdminUserService(_supa).createUser(
-          name: _name.text.trim(),
-          email: email,
-          password: _password.text,
-          phone: _phone.text.trim(),
-          icNo: _ic.text.trim(),
-          gender: 'Male',
-          role: 'Leaser',
-          status: 'Active',
-          emailVerified: true,
-        );
-        userId = (created['user_id'] ?? '').toString().trim();
-        if (userId.isEmpty) {
-          final inserted = await _supa
-              .from('app_user')
-              .select('user_id')
-              .eq('user_email', email)
-              .limit(1)
-              .maybeSingle();
-          userId = (inserted?['user_id'] ?? '').toString().trim();
-        }
-        if (userId.isEmpty) {
-          throw Exception('Linked app_user was created but user_id could not be resolved.');
-        }
+      final existingByEmail = await _findLeaserByEmail(email);
+      if (existingByEmail != null) {
+        throw Exception('This email already has a leaser record');
       }
 
-      final existing = await widget.service.getByUserId(userId);
-      if (existing != null) {
-        throw Exception('This user already has a leaser record');
+      var userId = await _findExistingUserIdByEmail(email);
+      if (userId.isEmpty) {
+        userId = await _tryCreateLinkedAppUser(email);
+      }
+
+      if (userId.isNotEmpty) {
+        final existing = await widget.service.getByUserId(userId);
+        if (existing != null) {
+          throw Exception('This user already has a leaser record');
+        }
       }
 
       final leaserId = await widget.service.generateLeaserId();
       await _supa.from('leaser').insert({
         'leaser_id': leaserId,
-        'user_id': userId,
+        'user_id': userId.isEmpty ? null : userId,
         'leaser_type': _type.text.trim(),
         'leaser_name': _name.text.trim(),
-        'company_name': _isCompany ? _company.text.trim() : null,
-        'owner_name': _isCompany ? _owner.text.trim() : null,
+        'company_name': _company.text.trim().isEmpty ? null : _company.text.trim(),
+        'owner_name': _owner.text.trim().isEmpty ? null : _owner.text.trim(),
         'phone': _phone.text.trim(),
         'email': email,
         'ic_no': _ic.text.trim(),
-        'ssm_no': _isCompany ? _ssm.text.trim() : null,
+        'ssm_no': _ssm.text.trim().isEmpty ? null : _ssm.text.trim(),
         'leaser_status': _status,
         'submitted_at': DateTime.now().toIso8601String(),
       });
@@ -335,16 +373,16 @@ class _LeaserAddPageState extends State<_LeaserAddPage> {
           child: ListView(
             padding: const EdgeInsets.all(16),
             children: [
-              Text(
-                'If the email is not found in app_user, this page will create the linked login first and then add the leaser record.',
-                style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
-              ),
-              const SizedBox(height: 12),
               TextFormField(
                 controller: _email,
                 decoration: const InputDecoration(labelText: 'Email'),
                 keyboardType: TextInputType.emailAddress,
-                validator: (v) => MyValidators.email(v),
+                validator: (v) {
+                  final s = (v ?? '').trim();
+                  if (s.isEmpty) return 'Required';
+                  if (!s.contains('@')) return 'Invalid email';
+                  return null;
+                },
               ),
               const SizedBox(height: 10),
               DropdownButtonFormField<String>(
@@ -354,91 +392,40 @@ class _LeaserAddPageState extends State<_LeaserAddPage> {
                   DropdownMenuItem(value: 'Individual', child: Text('Individual')),
                   DropdownMenuItem(value: 'Company', child: Text('Company')),
                 ],
-                onChanged: _busy
-                    ? null
-                    : (v) => setState(() => _type.text = v ?? 'Individual'),
+                onChanged: _busy ? null : (v) => setState(() => _type.text = v ?? 'Individual'),
               ),
               const SizedBox(height: 10),
               TextFormField(
                 controller: _name,
-                decoration: InputDecoration(
-                  labelText: _isCompany ? 'PIC Name' : 'Name',
-                ),
-                validator: (v) => MyValidators.personName(
-                  v,
-                  fieldName: _isCompany ? 'PIC name' : 'Name',
-                ),
+                decoration: const InputDecoration(labelText: 'Name / PIC Name'),
+                validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null,
               ),
               const SizedBox(height: 10),
               TextFormField(
                 controller: _company,
-                decoration: const InputDecoration(labelText: 'Company Name'),
-                validator: (v) => _isCompany ? MyValidators.companyName(v) : null,
+                decoration: const InputDecoration(labelText: 'Company Name (if company)'),
               ),
               const SizedBox(height: 10),
               TextFormField(
                 controller: _owner,
-                decoration: const InputDecoration(labelText: 'Owner Name / Authorized Person'),
-                validator: (v) => _isCompany ? MyValidators.personName(v, fieldName: 'Owner name') : null,
+                decoration: const InputDecoration(labelText: 'Owner Name (if company)'),
               ),
               const SizedBox(height: 10),
               TextFormField(
                 controller: _phone,
                 decoration: const InputDecoration(labelText: 'Phone'),
-                keyboardType: TextInputType.phone,
-                validator: (v) => MyValidators.malaysiaPhone(v),
+                validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null,
               ),
               const SizedBox(height: 10),
               TextFormField(
                 controller: _ic,
-                decoration: const InputDecoration(labelText: 'IC No'),
-                keyboardType: TextInputType.number,
-                validator: (v) => MyValidators.icNumber(v),
+                decoration: const InputDecoration(labelText: 'IC'),
+                validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null,
               ),
               const SizedBox(height: 10),
               TextFormField(
                 controller: _ssm,
-                decoration: InputDecoration(
-                  labelText: _isCompany ? 'SSM No' : 'SSM No (optional)',
-                ),
-                keyboardType: TextInputType.number,
-                validator: (v) => _isCompany ? MyValidators.ssmNumber(v) : MyValidators.ssmNumber(v, required: false),
-              ),
-              const SizedBox(height: 14),
-              Text(
-                'Linked login (only used when this email is new)',
-                style: Theme.of(context).textTheme.titleSmall,
-              ),
-              const SizedBox(height: 10),
-              TextFormField(
-                controller: _password,
-                obscureText: !_showPw,
-                decoration: InputDecoration(
-                  labelText: 'Temporary Password',
-                  helperText: 'Required only when the email does not exist yet.',
-                  suffixIcon: IconButton(
-                    icon: Icon(_showPw ? Icons.visibility_off : Icons.visibility),
-                    onPressed: _busy ? null : () => setState(() => _showPw = !_showPw),
-                  ),
-                ),
-                validator: (v) {
-                  final value = (v ?? '');
-                  if (value.trim().isEmpty) return null;
-                  return MyValidators.password(value);
-                },
-              ),
-              const SizedBox(height: 10),
-              TextFormField(
-                controller: _confirmPassword,
-                obscureText: !_showPw,
-                decoration: const InputDecoration(
-                  labelText: 'Confirm Temporary Password',
-                  helperText: 'Leave empty if the email already has a linked user.',
-                ),
-                validator: (v) {
-                  if (_password.text.trim().isEmpty && (v ?? '').trim().isEmpty) return null;
-                  return MyValidators.confirmPassword(v, _password.text);
-                },
+                decoration: const InputDecoration(labelText: 'SSM No (optional)'),
               ),
               const SizedBox(height: 10),
               DropdownButtonFormField<String>(

@@ -558,7 +558,7 @@ class _CreateUserPageState extends State<_CreateUserPage> {
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
             children: [
               Text(
-                'This will create a Supabase Auth user and an app_user record (Role=User).\n\nYou must deploy the Edge Function `create_app_user`.',
+                'This will create a Supabase Auth user and an app_user record (Role=User).',
                 style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
               ),
               const SizedBox(height: 12),

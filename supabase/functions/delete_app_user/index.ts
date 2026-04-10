@@ -1,8 +1,22 @@
 import { createClient, serve, corsHeaders, json, getJwt, mustEnv, serviceRoleKey, authUserFromJwt, isAdminOrStaff } from "./_shared.ts";
 
 async function safeDeleteByEq(admin: ReturnType<typeof createClient>, table: string, col: string, val: string) {
+  const cleanVal = (val ?? '').toString().trim();
+  if (!cleanVal) return;
   try {
-    await admin.from(table).delete().eq(col, val);
+    const { error } = await admin.from(table).delete().eq(col, cleanVal);
+    if (error) {
+      const msg = (error.message ?? '').toLowerCase();
+      if (
+        msg.includes('does not exist') ||
+        msg.includes('relation') ||
+        msg.includes('column') ||
+        msg.includes('schema cache')
+      ) {
+        return;
+      }
+      console.warn(`[delete_app_user] best-effort delete failed on ${table}.${col}: ${error.message}`);
+    }
   } catch (_) {
     // ignore (table/column might not exist)
   }
@@ -35,7 +49,6 @@ serve(async (req) => {
     if (!userId) return json({ ok: false, error: "user_id is required" }, 400);
     if (!authUid) return json({ ok: false, error: "auth_uid is required" }, 400);
 
-    // Get email for cleanup (best effort)
     let email = "";
     try {
       const { data } = await admin.from("app_user").select("user_email").eq("user_id", userId).limit(1).maybeSingle();
@@ -43,23 +56,68 @@ serve(async (req) => {
     } catch (_) {}
 
     if (force) {
-      // Best-effort cleanup of common dependent tables in this project.
-      // We ignore errors because schemas differ between teams.
-      // Order matters: delete children before parent.
-      await safeDeleteByEq(admin, "receipt", "user_id", userId);
-      await safeDeleteByEq(admin, "payment", "user_id", userId);
-      await safeDeleteByEq(admin, "contract", "user_id", userId);
-      await safeDeleteByEq(admin, "booking", "user_id", userId);
+      const bookingIds = new Set<string>();
+      try {
+        const { data } = await admin.from("booking").select("booking_id").eq("user_id", userId);
+        for (const row of data ?? []) {
+          const bookingId = String((row as any)?.booking_id ?? '').trim();
+          if (bookingId) bookingIds.add(bookingId);
+        }
+      } catch (_) {}
+      try {
+        const { data } = await admin.from("booking").select("booking_id").eq("auth_uid", authUid);
+        for (const row of data ?? []) {
+          const bookingId = String((row as any)?.booking_id ?? '').trim();
+          if (bookingId) bookingIds.add(bookingId);
+        }
+      } catch (_) {}
 
-      await safeDeleteByEq(admin, "user_voucher", "user_id", userId);
-      await safeDeleteByEq(admin, "driver_licenses", "user_id", userId);
+      const bookingLinkedTables = [
+        "receipt",
+        "payment",
+        "contract",
+        "installment",
+        "rental_history",
+        "notification",
+        "extra_charge",
+      ];
 
-      // Some tables might track auth_uid instead
-      await safeDeleteByEq(admin, "receipt", "auth_uid", authUid);
-      await safeDeleteByEq(admin, "payment", "auth_uid", authUid);
-      await safeDeleteByEq(admin, "contract", "auth_uid", authUid);
-      await safeDeleteByEq(admin, "booking", "auth_uid", authUid);
-      await safeDeleteByEq(admin, "driver_licenses", "auth_uid", authUid);
+      for (const bookingId of bookingIds) {
+        for (const table of bookingLinkedTables) {
+          await safeDeleteByEq(admin, table, "booking_id", bookingId);
+        }
+        await safeDeleteByEq(admin, "user_voucher", "used_booking_id", bookingId);
+      }
+
+      const userLinkedTables = [
+        "receipt",
+        "payment",
+        "contract",
+        "booking",
+        "installment",
+        "rental_history",
+        "user_voucher",
+        "driver_licenses",
+        "wallet_transaction",
+        "wallet_topup",
+        "notification",
+        "extra_charge",
+        "support_ticket",
+      ];
+      for (const table of userLinkedTables) {
+        await safeDeleteByEq(admin, table, "user_id", userId);
+      }
+
+      const authLinkedTables = [
+        "receipt",
+        "payment",
+        "contract",
+        "booking",
+        "driver_licenses",
+      ];
+      for (const table of authLinkedTables) {
+        await safeDeleteByEq(admin, table, "auth_uid", authUid);
+      }
 
       if (email) {
         await safeDeleteByEq(admin, "verification_codes", "user_email", email);
@@ -67,19 +125,16 @@ serve(async (req) => {
       }
     }
 
-    // Delete app_user row (may fail if FK constraints remain)
     const { error: dbErr } = await admin.from("app_user").delete().eq("user_id", userId);
     if (dbErr) {
       return json({
         ok: false,
-        error: `DB delete failed: ${dbErr.message}. If you have foreign keys, enable ON DELETE CASCADE or set force=true and ensure child rows are deleted first.`,
+        error: `DB delete failed: ${dbErr.message}. If you still have foreign keys, keep force=true and ensure child rows are deleted first.`,
       }, 400);
     }
 
-    // Delete Supabase Auth user
     const { error: authErr } = await admin.auth.admin.deleteUser(authUid);
     if (authErr) {
-      // If auth deletion fails, try to restore app_user? Not possible safely.
       return json({ ok: false, error: `Auth deleteUser failed: ${authErr.message}` }, 400);
     }
 

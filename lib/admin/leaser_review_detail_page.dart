@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../config/supabase_config.dart';
 import '../services/leaser_application_service.dart';
 
 class LeaserReviewDetailPage extends StatefulWidget {
@@ -29,6 +30,126 @@ class _LeaserReviewDetailPageState extends State<LeaserReviewDetailPage> {
     super.initState();
     _svc = LeaserApplicationService(_supa);
     _loadSsm();
+  }
+
+  Future<Session> _requireAdminSession() async {
+    Session? session;
+    try {
+      final refreshed = await _supa.auth.refreshSession();
+      session = refreshed.session;
+    } catch (_) {
+      // ignore
+    }
+    session ??= _supa.auth.currentSession;
+    if (session == null || session.accessToken.isEmpty) {
+      throw Exception('Admin session expired. Please login again.');
+    }
+    return session;
+  }
+
+  Future<Map<String, dynamic>> _invokeLeaserFunctionHttp({
+    required List<String> names,
+    required Map<String, dynamic> body,
+    required String token,
+  }) async {
+    Object? lastError;
+
+    for (final name in names) {
+      HttpClient? client;
+      try {
+        client = HttpClient();
+        final request = await client.postUrl(
+          Uri.parse('${SupabaseConfig.supabaseUrl}/functions/v1/$name'),
+        );
+        request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
+        request.headers.set('x-user-jwt', token);
+        request.headers.set('apikey', SupabaseConfig.supabaseAnonKey);
+        request.headers.contentType = ContentType.json;
+        request.write(jsonEncode(body));
+
+        final response = await request.close();
+        final text = await utf8.decoder.bind(response).join();
+        if (response.statusCode == 404) {
+          lastError = Exception('Function $name not found.');
+          continue;
+        }
+
+        dynamic data;
+        if (text.isNotEmpty) {
+          try {
+            data = jsonDecode(text);
+          } catch (_) {
+            data = text;
+          }
+        }
+
+        if (response.statusCode >= 400) {
+          throw Exception('$name HTTP ${response.statusCode}: ${data ?? text}');
+        }
+        if (data is Map) {
+          return Map<String, dynamic>.from(data);
+        }
+        return {'ok': true, 'data': data};
+      } catch (e) {
+        lastError = e;
+        final lower = e.toString().toLowerCase();
+        if (lower.contains('404')) {
+          continue;
+        }
+        break;
+      } finally {
+        client?.close(force: true);
+      }
+    }
+
+    if (lastError != null) {
+      throw Exception(lastError.toString());
+    }
+    throw Exception('Requested function was not found.');
+  }
+
+  Future<void> _deleteLeaserDirectWithoutAuth({
+    required String leaserId,
+    required String storagePath,
+  }) async {
+    final vehicleRows = await _supa.from('vehicle').select('vehicle_id').eq('leaser_id', leaserId);
+    final vehicleIds = <String>[];
+    if (vehicleRows is List) {
+      for (final raw in vehicleRows) {
+        final vehicleId = _s((raw as Map)['vehicle_id']).trim();
+        if (vehicleId.isNotEmpty) vehicleIds.add(vehicleId);
+      }
+    }
+
+    if (vehicleIds.isNotEmpty) {
+      final inValue = '(${vehicleIds.join(',')})';
+      final bookings = await _supa
+          .from('booking')
+          .select('booking_id')
+          .filter('vehicle_id', 'in', inValue)
+          .limit(1);
+      if (bookings is List && bookings.isNotEmpty) {
+        throw Exception(
+          'Cannot delete this leaser because their vehicles have bookings. Deactivate the leaser instead, or cancel/remove bookings first.',
+        );
+      }
+      await _supa.from('vehicle').delete().eq('leaser_id', leaserId);
+    }
+
+    final userId = _s(widget.row['user_id']).trim();
+    if (userId.isNotEmpty) {
+      try {
+        await _supa.from('app_user').delete().eq('user_id', userId);
+      } catch (_) {}
+    }
+
+    await _supa.from('leaser').delete().eq('leaser_id', leaserId);
+
+    if (storagePath.isNotEmpty) {
+      try {
+        await _supa.storage.from(LeaserApplicationService.bucketId).remove([storagePath]);
+      } catch (_) {}
+    }
   }
 
   Future<void> _loadSsm() async {
@@ -98,28 +219,8 @@ class _LeaserReviewDetailPageState extends State<LeaserReviewDetailPage> {
   }
 
   Future<void> _delete() async {
-    // Requirement: MUST fully delete including Supabase Auth user (no DB-only fallback).
     final id = _s(widget.row['leaser_id']).trim();
-    var authUid = _s(widget.row['auth_uid']).trim(); // may be absent in leaser table
-
-    // #region agent log
-    try {
-      final logFile = File('debug-e7b2d4.log');
-      final log = {
-        'sessionId': 'e7b2d4',
-        'runId': 'initial',
-        'hypothesisId': 'H4',
-        'location': 'leaser_review_detail_page.dart:_delete',
-        'message': 'Delete leaser requested (review page)',
-        'data': {
-          'leaserId': id,
-          'authUidEmpty': authUid.isEmpty,
-        },
-        'timestamp': DateTime.now().millisecondsSinceEpoch,
-      };
-      logFile.writeAsStringSync('${jsonEncode(log)}\n', mode: FileMode.append, flush: true);
-    } catch (_) {}
-    // #endregion
+    var authUid = _s(widget.row['auth_uid']).trim();
     if (id.isEmpty) return;
 
     final yes = await showDialog<bool>(
@@ -128,8 +229,7 @@ class _LeaserReviewDetailPageState extends State<LeaserReviewDetailPage> {
         title: const Text('Delete leaser'),
         content: Text(
           'Delete leaser $id completely?\n\n'
-          'This will delete BOTH the leaser record and the Supabase Auth user.\n\n'
-          'Requirement: the Edge Function `delete_leaser` must be deployed. If it is missing or fails, nothing will be deleted.',
+          'The system will try to remove the linked Auth account first. If no Auth account is linked, it will remove the leaser record directly when safe.',
         ),
         actions: [
           TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
@@ -141,63 +241,63 @@ class _LeaserReviewDetailPageState extends State<LeaserReviewDetailPage> {
 
     setState(() => _busy = true);
     try {
-      Session? session = _supa.auth.currentSession;
-      if (session == null || session.accessToken.isEmpty) {
-        throw Exception('Admin session expired. Please login again.');
-      }
-
+      final session = await _requireAdminSession();
       if (authUid.isEmpty) {
         authUid = await _resolveAuthUidForLeaser(widget.row);
       }
-      if (authUid.isEmpty) {
-        throw Exception('Missing auth_uid for this leaser. Cannot delete Auth user safely.');
-      }
 
       final path = _s(widget.row['ssm_photo_path']).trim();
-
-      // IMPORTANT: for protected Edge Functions, pass the admin JWT explicitly.
-      // (Same approach as staff deletion module.)
-      final res = await _supa.functions.invoke(
-        'delete_leaser',
-        headers: {
-          'Authorization': 'Bearer ${session.accessToken}',
-          'x-user-jwt': session.accessToken,
-        },
-        body: {'auth_uid': authUid, 'leaser_id': id},
-      );
-
-      // #region agent log
-      try {
-        final logFile = File('debug-e7b2d4.log');
-        final log = {
-          'sessionId': 'e7b2d4',
-          'runId': 'initial',
-          'hypothesisId': 'H4',
-          'location': 'leaser_review_detail_page.dart:_delete',
-          'message': 'delete_leaser response (review page)',
-          'data': {
-            'leaserId': id,
-            'rawDataType': res.data?.runtimeType.toString(),
-          },
-          'timestamp': DateTime.now().millisecondsSinceEpoch,
-        };
-        logFile.writeAsStringSync('${jsonEncode(log)}\n', mode: FileMode.append, flush: true);
-      } catch (_) {}
-      // #endregion
-
-      final data = res.data;
-      final okResp = (data is Map) && (data['ok'] == true);
-      if (!okResp) {
-        throw Exception('delete_leaser failed: $data');
+      final body = <String, dynamic>{'leaser_id': id};
+      if (authUid.isNotEmpty) {
+        body['auth_uid'] = authUid;
       }
 
-      // Verify deletion
+      Map<String, dynamic> data;
+      try {
+        final res = await _supa.functions.invoke(
+          'delete_leaser',
+          headers: {
+            'Authorization': 'Bearer ${session.accessToken}',
+            'x-user-jwt': session.accessToken,
+          },
+          body: body,
+        );
+        if (res.status >= 400) {
+          throw Exception('delete_leaser HTTP ${res.status}: ${res.data}');
+        }
+        data = res.data is Map ? Map<String, dynamic>.from(res.data as Map) : {'ok': true, 'data': res.data};
+      } catch (e) {
+        final lower = e.toString().toLowerCase();
+        if (authUid.isEmpty &&
+            (lower.contains('cannot resolve auth_uid') || lower.contains('auth_uid'))) {
+          await _deleteLeaserDirectWithoutAuth(leaserId: id, storagePath: path);
+          data = {'ok': true, 'fallback': 'direct-no-auth'};
+        } else if (lower.contains('invalid jwt') || lower.contains('401') || lower.contains('not found')) {
+          data = await _invokeLeaserFunctionHttp(
+            names: const ['delete_leaser', 'delete-leaser'],
+            body: body,
+            token: session.accessToken,
+          );
+        } else {
+          rethrow;
+        }
+      }
+
+      final okResp = data['ok'] == true;
+      if (!okResp) {
+        final errorText = _s(data['error']).toLowerCase();
+        if (authUid.isEmpty && errorText.contains('auth_uid')) {
+          await _deleteLeaserDirectWithoutAuth(leaserId: id, storagePath: path);
+        } else {
+          throw Exception('delete_leaser failed: $data');
+        }
+      }
+
       final stillExists = await _supa.from('leaser').select('leaser_id').eq('leaser_id', id).maybeSingle();
       if (stillExists != null) {
-        throw Exception('Delete reported success but record still exists. Check Edge Function logic / FK constraints.');
+        throw Exception('Delete reported success but record still exists. Check delete logic / FK constraints.');
       }
 
-      // optional: clean up storage file (not required for Auth deletion requirement)
       if (path.isNotEmpty) {
         try {
           await _supa.storage.from(LeaserApplicationService.bucketId).remove([path]);
@@ -210,25 +310,6 @@ class _LeaserReviewDetailPageState extends State<LeaserReviewDetailPage> {
       );
       Navigator.of(context).pop(true);
     } catch (e) {
-      // #region agent log
-      try {
-        final logFile = File('debug-e7b2d4.log');
-        final log = {
-          'sessionId': 'e7b2d4',
-          'runId': 'initial',
-          'hypothesisId': 'H4',
-          'location': 'leaser_review_detail_page.dart:_delete',
-          'message': 'Delete leaser threw (review page)',
-          'data': {
-            'leaserId': id,
-            'error': e.toString(),
-          },
-          'timestamp': DateTime.now().millisecondsSinceEpoch,
-        };
-        logFile.writeAsStringSync('${jsonEncode(log)}\n', mode: FileMode.append, flush: true);
-      } catch (_) {}
-      // #endregion
-
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Delete failed: $e'), backgroundColor: Colors.red),

@@ -1,12 +1,10 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../main.dart';
-import '../utils/country_codes.dart';
 import '../services/leaser_application_service.dart';
 
 enum LeaserType { individual, company }
@@ -36,8 +34,6 @@ class _LeaserRegisterPageState extends State<LeaserRegisterPage> {
   final _password = TextEditingController();
   final _ssmNo = TextEditingController();
 
-  CountryCode _selectedCountry = CountryCodes.getDefault();
-
   final _picker = ImagePicker();
   XFile? _ssmPhoto;
   Uint8List? _ssmPreview;
@@ -64,56 +60,6 @@ class _LeaserRegisterPageState extends State<LeaserRegisterPage> {
   }
 
   bool get _isCompany => _type == LeaserType.company;
-
-  String get _fullPhoneNumber {
-    final phoneDigits = _phone.text.trim().replaceAll(RegExp(r'[\s-]'), '');
-    return '${_selectedCountry.dialCode}$phoneDigits';
-  }
-
-  String? _validateRequiredName(
-    String? value, {
-    required String fieldName,
-    bool allowDigits = false,
-  }) {
-    final s = (value ?? '').trim();
-    if (s.isEmpty) return '$fieldName is required';
-    if (s.length > 100) return '$fieldName cannot be more than 100 characters';
-    if (!allowDigits && RegExp(r'\d').hasMatch(s)) {
-      return '$fieldName cannot contain digits';
-    }
-    return null;
-  }
-
-  String? _validatePhone(String? value) {
-    final s = (value ?? '').trim();
-    if (s.isEmpty) return 'Phone is required';
-    if (!RegExp(r'^\d+$').hasMatch(s)) return 'Phone must contain only digits';
-    if (s.length < 7) return 'Phone is too short';
-    if (s.length > 18) return 'Phone cannot be more than 18 digits';
-    return null;
-  }
-
-  String? _validateEmail(String? value) {
-    final s = (value ?? '').trim();
-    if (s.isEmpty) return 'Email is required';
-    if (s.length > 100) return 'Email cannot be more than 100 characters';
-    if (!RegExp(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$').hasMatch(s)) {
-      return 'Please enter a valid email';
-    }
-    return null;
-  }
-
-  String? _validateFixedDigits(
-    String? value, {
-    required String fieldName,
-    required int maxDigits,
-  }) {
-    final s = (value ?? '').trim();
-    if (s.isEmpty) return '$fieldName is required';
-    if (!RegExp(r'^\d+$').hasMatch(s)) return '$fieldName must contain only digits';
-    if (s.length != maxDigits) return '$fieldName must be $maxDigits digits';
-    return null;
-  }
 
   Future<void> _pickSsm(ImageSource source) async {
     try {
@@ -222,7 +168,7 @@ class _LeaserRegisterPageState extends State<LeaserRegisterPage> {
             'user_name': _isCompany ? _ownerName.text.trim() : _name.text.trim(),
             'user_email': email,
             'user_password': '***',
-            'user_phone': _fullPhoneNumber,
+            'user_phone': _phone.text.trim(),
             'user_icno': _ic.text.trim(),
             'user_gender': 'Male',
             'user_role': 'Leaser',
@@ -263,7 +209,7 @@ class _LeaserRegisterPageState extends State<LeaserRegisterPage> {
         'leaser_name': _isCompany ? _ownerName.text.trim() : _name.text.trim(),
         'company_name': _isCompany ? _companyName.text.trim() : null,
         'owner_name': _isCompany ? _ownerName.text.trim() : null,
-        'phone': _fullPhoneNumber,
+        'phone': _phone.text.trim(),
         'email': email,
         'ic_no': _ic.text.trim(),
         'ssm_no': _isCompany ? _ssmNo.text.trim() : null,
@@ -390,117 +336,41 @@ class _LeaserRegisterPageState extends State<LeaserRegisterPage> {
               if (!_isCompany)
                 TextFormField(
                   controller: _name,
-                  inputFormatters: [
-                    LengthLimitingTextInputFormatter(100),
-                    FilteringTextInputFormatter.deny(RegExp(r'\d')),
-                  ],
                   decoration: const InputDecoration(labelText: 'Name'),
-                  validator: (v) => _validateRequiredName(v, fieldName: 'Name'),
+                  validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null,
                 ),
 
               if (_isCompany) ...[
                 TextFormField(
                   controller: _companyName,
-                  inputFormatters: [
-                    LengthLimitingTextInputFormatter(100),
-                  ],
                   decoration: const InputDecoration(labelText: 'Company Name'),
-                  validator: (v) => _validateRequiredName(
-                    v,
-                    fieldName: 'Company name',
-                    allowDigits: true,
-                  ),
+                  validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null,
                 ),
                 const SizedBox(height: 10),
                 TextFormField(
                   controller: _ownerName,
-                  inputFormatters: [
-                    LengthLimitingTextInputFormatter(100),
-                    FilteringTextInputFormatter.deny(RegExp(r'\d')),
-                  ],
                   decoration: const InputDecoration(labelText: 'Owner / Person in charge name'),
-                  validator: (v) => _validateRequiredName(
-                    v,
-                    fieldName: 'Owner / Person in charge name',
-                  ),
+                  validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null,
                 ),
               ],
 
               const SizedBox(height: 10),
-              Row(
-                children: [
-                  Container(
-                    width: 130,
-                    decoration: BoxDecoration(
-                      color: Colors.grey[50],
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.grey[300]!),
-                    ),
-                    child: DropdownButtonHideUnderline(
-                      child: DropdownButton<CountryCode>(
-                        value: _selectedCountry,
-                        isExpanded: true,
-                        icon: const Icon(Icons.arrow_drop_down, size: 24),
-                        items: CountryCodes.countries.map((country) {
-                          return DropdownMenuItem<CountryCode>(
-                            value: country,
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 8),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(
-                                    country.safeFlagLabel,
-                                    style: const TextStyle(fontSize: 18),
-                                  ),
-                                  const SizedBox(width: 6),
-                                  Flexible(
-                                    child: Text(
-                                      country.dialCode,
-                                      style: const TextStyle(fontSize: 14),
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          );
-                        }).toList(),
-                        onChanged: _loading
-                            ? null
-                            : (CountryCode? newValue) {
-                                if (newValue == null) return;
-                                setState(() {
-                                  _selectedCountry = newValue;
-                                });
-                              },
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: TextFormField(
-                      controller: _phone,
-                      keyboardType: TextInputType.phone,
-                      inputFormatters: [
-                        FilteringTextInputFormatter.digitsOnly,
-                        LengthLimitingTextInputFormatter(18),
-                      ],
-                      decoration: const InputDecoration(labelText: 'Phone'),
-                      validator: _validatePhone,
-                    ),
-                  ),
-                ],
+              TextFormField(
+                controller: _phone,
+                decoration: const InputDecoration(labelText: 'Phone'),
+                validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null,
               ),
               const SizedBox(height: 10),
               TextFormField(
                 controller: _email,
-                inputFormatters: [
-                  LengthLimitingTextInputFormatter(100),
-                ],
                 decoration: const InputDecoration(labelText: 'Email (Login)'),
                 keyboardType: TextInputType.emailAddress,
-                validator: _validateEmail,
+                validator: (v) {
+                  final s = (v ?? '').trim();
+                  if (s.isEmpty) return 'Required';
+                  if (!s.contains('@')) return 'Invalid email';
+                  return null;
+                },
               ),
               const SizedBox(height: 10),
               TextFormField(
@@ -517,17 +387,8 @@ class _LeaserRegisterPageState extends State<LeaserRegisterPage> {
               const SizedBox(height: 10),
               TextFormField(
                 controller: _ic,
-                keyboardType: TextInputType.number,
-                inputFormatters: [
-                  FilteringTextInputFormatter.digitsOnly,
-                  LengthLimitingTextInputFormatter(12),
-                ],
                 decoration: const InputDecoration(labelText: 'IC'),
-                validator: (v) => _validateFixedDigits(
-                  v,
-                  fieldName: 'IC',
-                  maxDigits: 12,
-                ),
+                validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null,
               ),
 
               if (_isCompany) ...[
@@ -539,15 +400,12 @@ class _LeaserRegisterPageState extends State<LeaserRegisterPage> {
                     hintText: '201901000001',
                   ),
                   keyboardType: TextInputType.number,
-                  inputFormatters: [
-                    FilteringTextInputFormatter.digitsOnly,
-                    LengthLimitingTextInputFormatter(12),
-                  ],
-                  validator: (v) => _validateFixedDigits(
-                    v,
-                    fieldName: 'SSM No',
-                    maxDigits: 12,
-                  ),
+                  validator: (v) {
+                    final s = (v ?? '').trim();
+                    if (s.isEmpty) return 'Required';
+                    if (!RegExp(r'^\d{12}$').hasMatch(s)) return 'Must be 12 digits';
+                    return null;
+                  },
                 ),
                 const SizedBox(height: 10),
                 Card(

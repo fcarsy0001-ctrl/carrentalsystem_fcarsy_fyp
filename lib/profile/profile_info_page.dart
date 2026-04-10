@@ -1,9 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/app_user_service.dart';
-import '../utils/country_codes.dart';
 
 class ProfileInfoPage extends StatefulWidget {
   const ProfileInfoPage({super.key});
@@ -24,7 +22,6 @@ class _ProfileInfoPageState extends State<ProfileInfoPage> {
   String _gender = 'Male';
   bool _loading = true;
   bool _saving = false;
-  CountryCode _selectedCountry = CountryCodes.getDefault();
 
   @override
   void initState() {
@@ -38,33 +35,6 @@ class _ProfileInfoPageState extends State<ProfileInfoPage> {
     _phone.dispose();
     _icno.dispose();
     super.dispose();
-  }
-
-  void _splitStoredPhone(String rawPhone) {
-    final phone = rawPhone.trim();
-    if (phone.isEmpty) {
-      _selectedCountry = CountryCodes.getDefault();
-      _phone.clear();
-      return;
-    }
-
-    CountryCode? matchedCountry;
-    for (final country in CountryCodes.countries) {
-      if (phone.startsWith(country.dialCode)) {
-        if (matchedCountry == null ||
-            country.dialCode.length > matchedCountry.dialCode.length) {
-          matchedCountry = country;
-        }
-      }
-    }
-
-    if (matchedCountry != null) {
-      _selectedCountry = matchedCountry;
-      _phone.text = phone.substring(matchedCountry.dialCode.length);
-    } else {
-      _selectedCountry = CountryCodes.getDefault();
-      _phone.text = phone.replaceAll(RegExp(r'\D'), '');
-    }
   }
 
   Future<void> _load() async {
@@ -81,11 +51,12 @@ class _ProfileInfoPageState extends State<ProfileInfoPage> {
       if (row != null) {
         final m = Map<String, dynamic>.from(row as Map);
         _name.text = (m['user_name'] ?? '').toString();
-        _splitStoredPhone((m['user_phone'] ?? '').toString());
+        _phone.text = (m['user_phone'] ?? '').toString();
         _icno.text = (m['user_icno'] ?? '').toString();
         final g = (m['user_gender'] ?? '').toString().trim();
         if (g.isNotEmpty) _gender = g;
       } else {
+        // Ensure app_user for OAuth and retry
         await AppUserService(_supa).ensureAppUser();
       }
     } catch (_) {}
@@ -104,12 +75,9 @@ class _ProfileInfoPageState extends State<ProfileInfoPage> {
     try {
       await AppUserService(_supa).ensureAppUser();
 
-      final localPhone = _phone.text.trim();
-      final fullPhone = '${_selectedCountry.dialCode}$localPhone';
-
       await _supa.from('app_user').update({
         'user_name': _name.text.trim(),
-        'user_phone': fullPhone,
+        'user_phone': _phone.text.trim(),
         'user_icno': _icno.text.trim(),
         'user_gender': _gender,
       }).eq('auth_uid', user.id);
@@ -160,130 +128,42 @@ class _ProfileInfoPageState extends State<ProfileInfoPage> {
                           const SizedBox(height: 12),
                           TextFormField(
                             controller: _name,
-                            inputFormatters: [
-                              LengthLimitingTextInputFormatter(100),
-                              FilteringTextInputFormatter.deny(RegExp(r'\d')),
-                            ],
                             decoration: const InputDecoration(
                               labelText: 'Full name',
                               border: OutlineInputBorder(),
                             ),
                             validator: (v) {
-                              final value = v?.trim() ?? '';
-                              if (value.isEmpty) {
+                              if (v == null || v.trim().isEmpty) {
                                 return 'Name is required';
-                              }
-                              if (RegExp(r'\d').hasMatch(value)) {
-                                return 'Full name cannot contain digits';
-                              }
-                              if (value.length > 100) {
-                                return 'Full name cannot be more than 100 characters';
                               }
                               return null;
                             },
                           ),
                           const SizedBox(height: 12),
-                          Row(
-                            children: [
-                              Container(
-                                width: 130,
-                                decoration: BoxDecoration(
-                                  color: Colors.grey[50],
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(color: Colors.grey[300]!),
-                                ),
-                                child: DropdownButtonHideUnderline(
-                                  child: DropdownButton<CountryCode>(
-                                    value: _selectedCountry,
-                                    isExpanded: true,
-                                    icon: const Icon(Icons.arrow_drop_down, size: 24),
-                                    items: CountryCodes.countries.map((country) {
-                                      return DropdownMenuItem<CountryCode>(
-                                        value: country,
-                                        child: Padding(
-                                          padding: const EdgeInsets.symmetric(horizontal: 8),
-                                          child: Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              Text(
-                                                country.safeFlagLabel,
-                                                style: const TextStyle(fontSize: 18),
-                                              ),
-                                              const SizedBox(width: 6),
-                                              Flexible(
-                                                child: Text(
-                                                  country.dialCode,
-                                                  style: const TextStyle(fontSize: 14),
-                                                  overflow: TextOverflow.ellipsis,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                      );
-                                    }).toList(),
-                                    onChanged: (value) {
-                                      if (value == null) return;
-                                      setState(() => _selectedCountry = value);
-                                    },
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: TextFormField(
-                                  controller: _phone,
-                                  keyboardType: TextInputType.phone,
-                                  inputFormatters: [
-                                    FilteringTextInputFormatter.digitsOnly,
-                                    LengthLimitingTextInputFormatter(18),
-                                  ],
-                                  decoration: const InputDecoration(
-                                    labelText: 'Phone number',
-                                    border: OutlineInputBorder(),
-                                  ),
-                                  validator: (v) {
-                                    final value = v?.trim() ?? '';
-                                    if (value.isEmpty) {
-                                      return 'Phone is required';
-                                    }
-                                    if (!RegExp(r'^\d+$').hasMatch(value)) {
-                                      return 'Phone number must contain only digits';
-                                    }
-                                    if (value.length < 7) {
-                                      return 'Phone number is too short';
-                                    }
-                                    if (value.length > 18) {
-                                      return 'Phone number cannot be more than 18 digits';
-                                    }
-                                    return null;
-                                  },
-                                ),
-                              ),
-                            ],
+                          TextFormField(
+                            controller: _phone,
+                            keyboardType: TextInputType.phone,
+                            decoration: const InputDecoration(
+                              labelText: 'Phone number',
+                              border: OutlineInputBorder(),
+                            ),
+                            validator: (v) {
+                              if (v == null || v.trim().isEmpty) {
+                                return 'Phone is required';
+                              }
+                              return null;
+                            },
                           ),
                           const SizedBox(height: 12),
                           TextFormField(
                             controller: _icno,
-                            keyboardType: TextInputType.number,
-                            inputFormatters: [
-                              FilteringTextInputFormatter.digitsOnly,
-                              LengthLimitingTextInputFormatter(12),
-                            ],
                             decoration: const InputDecoration(
                               labelText: 'IC number',
                               border: OutlineInputBorder(),
                             ),
                             validator: (v) {
-                              final value = v?.trim() ?? '';
-                              if (value.isEmpty) {
+                              if (v == null || v.trim().isEmpty) {
                                 return 'IC number is required';
-                              }
-                              if (!RegExp(r'^\d+$').hasMatch(value)) {
-                                return 'IC number must contain only digits';
-                              }
-                              if (value.length > 12) {
-                                return 'IC number cannot be more than 12 digits';
                               }
                               return null;
                             },
